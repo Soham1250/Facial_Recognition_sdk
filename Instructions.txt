@@ -1,0 +1,17 @@
+1. Click on the file path above all files.
+
+2. Once clicked, the entire path will be selected and highlighted in blue.
+
+3. On that file path, just type cmd; this will open the command prompt at that file path.
+
+4. At last, just type "code ." and press enter.
+
+5. This is open vs code at the location.
+
+6. Press the combination "Crtl+Alt+B." This is the open file directory on the left-hand side.
+
+7. Locate a folder named "src" in the directory, open this folder, and navigate to the file "main.py."
+
+8.Once the file is opened, either run the file by clicking the run button on the top right corner or press the combination "Crtl+Alt+N.".
+
+9. This setup is for testing purposes only; once finished testing, an application will wrap this method inside itself. 
