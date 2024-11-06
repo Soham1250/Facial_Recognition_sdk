@@ -2,11 +2,11 @@ import json
 import cv2
 import dlib  # type: ignore
 import numpy as np  # type: ignore
-import os
+import os, sys, time, subprocess
 import mysql.connector  # type: ignore
 from scipy.spatial import distance  # type: ignore
-import subprocess
-import time
+import tkinter as tk
+from tkinter import ttk
 from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
 
 
@@ -76,8 +76,73 @@ def calculate_confidence(embedding1, embedding2, threshold=0.3):
     return confidence_level
 
 
-# Fetch stored embeddings from the database
+# Function to display pop-up using Tkinter with styling
+def show_match_popup(person_id):
+    # Create the main window with a background color
+    popup = tk.Tk()
+    popup.title("Face Match Found")
+    popup.geometry("400x250")
+    popup.configure(bg="#f7f7f7")  # Light background for an elegant look
 
+    # Header frame with a distinct background color
+    header_frame = tk.Frame(popup, bg="#4a90e2")  # Blue header
+    header_frame.grid(row=0, column=0, sticky="nsew")
+    header_label = tk.Label(
+        header_frame,
+        text="Match Found!",
+        font=("Helvetica", 18, "bold"),
+        bg="#4a90e2",
+        fg="white"
+    )
+    header_label.pack(pady=10, padx=10)
+
+    # Configure row and column weights for layout control
+    popup.grid_rowconfigure(0, weight=1)
+    popup.grid_rowconfigure(1, weight=3)
+    popup.grid_rowconfigure(2, weight=1)
+    popup.grid_rowconfigure(3, weight=1)
+    popup.grid_columnconfigure(0, weight=1)
+
+    # Display the person ID with a cleaner label style
+    label_text = f"Person ID: {person_id}"
+    label = tk.Label(
+        popup, 
+        text=label_text, 
+        font=("Helvetica", 14), 
+        bg="#f7f7f7", 
+        fg="#333333"
+    )
+    label.grid(row=1, column=0, padx=10, pady=(20, 10))
+
+    # Use ttk for styled buttons with accent colors
+    style = ttk.Style()
+    style.configure(
+        "Accent.TButton",
+        font=("Helvetica", 12),
+        padding=8,
+        background="#4a90e2",
+        foreground="white"
+    )
+    style.map(
+        "Accent.TButton",
+        background=[("active", "#357ABD")],  # Darker blue on hover
+        foreground=[("active", "white")]
+    )
+
+    # Create an OK button to close the pop-up only
+    ok_button = ttk.Button(popup, text="OK", style="Accent.TButton", command=popup.destroy)
+    ok_button.grid(row=2, column=0, pady=10)
+
+    # Create an Exit button to close the entire program
+    exit_button = ttk.Button(popup, text="Exit", style="Accent.TButton", command=sys.exit)
+    exit_button.grid(row=3, column=0, pady=(5, 20))
+
+    # Run the Tkinter main loop
+    popup.mainloop()
+
+
+    
+# Fetch stored embeddings from the database
 def fetch_embeddings_from_db(person_id):
     conn = connect_db()
     cursor = conn.cursor()
@@ -141,7 +206,7 @@ def log_activity(person_id, confidence_level):
     conn.close()
 
 def run_access_control_script():
-        script_path = "src/access_control.py"  
+        script_path = "src/Report.py"  
         subprocess.run(["python", script_path])
 
 # Load models
@@ -179,6 +244,9 @@ def main():
         print(f"Face matched with person ID: {person_id}")
         confidence_level = calculate_confidence(new_embedding, np.array(new_embedding))  # Use a reference embedding for comparison
         log_activity(person_id, confidence_level)
+    
+        # Display the Tkinter pop-up with the match details
+        show_match_popup(person_id)
     else:
         print("No matching faces found in the database.")
         run_access_control_script()
