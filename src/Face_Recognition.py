@@ -7,7 +7,7 @@ import mysql.connector  # type: ignore
 from scipy.spatial import distance  # type: ignore
 import subprocess
 import time
-from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
+from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
 
 
 def connect_db():
@@ -19,10 +19,6 @@ def connect_db():
         port=DB_PORT
     )
     return conn
-
-# File paths
-SHAPE_PREDICTOR_PATH = "models/shape_predictor_68_face_landmarks.dat"
-FACE_REC_MODEL_PATH = "models/dlib_face_recognition_resnet_model_v1.dat"
 
 # Check if files exist
 def check_file(path):
