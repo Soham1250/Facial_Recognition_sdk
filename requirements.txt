@@ -1,7 +1,7 @@
 opencv-python==4.8.0.74
 python==3.11.9 (64 bit)
 numpy==1.23.5
-psycopg2==2.9.6
+mysql.connector
 scipy==1.10.1
 dlib==19.24.0
 tk
