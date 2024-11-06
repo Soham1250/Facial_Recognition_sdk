@@ -76,12 +76,17 @@ def calculate_confidence(embedding1, embedding2, threshold=0.3):
     return confidence_level
 
 
+def run_access_control_script():
+        script_path = "src/report.py"  
+        subprocess.run(["python", script_path])
+
+
 # Function to display pop-up using Tkinter with styling
 def show_match_popup(person_id):
     # Create the main window with a background color
     popup = tk.Tk()
     popup.title("Face Match Found")
-    popup.geometry("400x250")
+    popup.geometry("400x300")
     popup.configure(bg="#f7f7f7")  # Light background for an elegant look
 
     # Header frame with a distinct background color
@@ -101,6 +106,7 @@ def show_match_popup(person_id):
     popup.grid_rowconfigure(1, weight=3)
     popup.grid_rowconfigure(2, weight=1)
     popup.grid_rowconfigure(3, weight=1)
+    popup.grid_rowconfigure(4, weight=1)
     popup.grid_columnconfigure(0, weight=1)
 
     # Display the person ID with a cleaner label style
@@ -110,7 +116,7 @@ def show_match_popup(person_id):
         text=label_text, 
         font=("Helvetica", 14), 
         bg="#f7f7f7", 
-        fg="#333333"
+        fg="#2c3e50"  # Slate blue color for a professional look
     )
     label.grid(row=1, column=0, padx=10, pady=(20, 10))
 
@@ -120,28 +126,24 @@ def show_match_popup(person_id):
         "Accent.TButton",
         font=("Helvetica", 12),
         padding=8,
-        background="#4a90e2",
-        foreground="white"
+       
     )
     style.map(
         "Accent.TButton",
         background=[("active", "#357ABD")],  # Darker blue on hover
-        foreground=[("active", "white")]
     )
 
     # Create an OK button to close the pop-up only
-    ok_button = ttk.Button(popup, text="OK", style="Accent.TButton", command=popup.destroy)
+    ok_button = ttk.Button(popup, text="OK", command=popup.destroy)
     ok_button.grid(row=2, column=0, pady=10)
 
-    # Create an Exit button to close the entire program
-    exit_button = ttk.Button(popup, text="Exit", style="Accent.TButton", command=sys.exit)
-    exit_button.grid(row=3, column=0, pady=(5, 20))
+    # Create a "Not you?" button for redirecting
+    not_you_button = ttk.Button(popup, text="Not you?", command=run_access_control_script)
+    not_you_button.grid(row=4, column=0, pady=(5, 20))
 
     # Run the Tkinter main loop
     popup.mainloop()
 
-
-    
 # Fetch stored embeddings from the database
 def fetch_embeddings_from_db(person_id):
     conn = connect_db()
@@ -205,9 +207,6 @@ def log_activity(person_id, confidence_level):
     cursor.close()
     conn.close()
 
-def run_access_control_script():
-        script_path = "src/Report.py"  
-        subprocess.run(["python", script_path])
 
 # Load models
 detector, shape_predictor, face_rec_model = load_models()
