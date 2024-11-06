@@ -6,13 +6,7 @@ import dlib #type:ignore
 import json  # Import the JSON module
 import hashlib
 import base64
-
-# Database connection parameters
-DB_HOST = 'localhost'
-DB_NAME = 'facial_recognition_sdk'
-DB_USER = 'root'
-DB_PASS = 'YTRewq^654321'
-DB_PORT = 7000
+from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
 
 def connect_db():
     conn = mysql.connector.connect(
@@ -89,16 +83,16 @@ def process_image(image_path):
     return features
 
 # Example usage
-front_image_path = 'data/sample_images/3003_Kishor_SP_F.jpg'
-left_image_path = 'data/sample_images/3003_Kishor_SP_L.jpg'
-right_image_path = 'data/sample_images/3003_Kishor_SP_R.jpg'
+front_image_path = 'Path to Front face image'
+left_image_path = 'Path to Left face image'
+right_image_path = 'Path to Right face image'
 
 front_features = process_image(front_image_path)
 left_features = process_image(left_image_path)
 right_features = process_image(right_image_path)
 
 # Insert embeddings into the database
-person_id = '3003_Kishor_SP'
+person_id = 'Person ID / Name'
 if front_features:
     for feature in front_features:
         insert_embedding(person_id, 'front', feature)
