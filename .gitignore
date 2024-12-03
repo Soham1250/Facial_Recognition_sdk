@@ -1,1 +1,7 @@
 data/temp/temp.jpg
+
+# Build and distribution files
+dist/
+build/
+*.exe
+*.pkg
