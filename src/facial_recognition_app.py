@@ -5,6 +5,8 @@ import os
 import numpy as np
 import dlib
 import mysql.connector
+from mysql.connector import pooling, Error
+from mysql.connector import pooling
 from PIL import Image, ImageTk
 import threading
 import json
@@ -12,19 +14,154 @@ from scipy.spatial import distance
 import subprocess
 import time
 from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
+import logging
+from contextlib import contextmanager
+import time
+import socket
+import random
+
+class DBConnectionManager:
+    _instance = None
+    _pool = None
+    _last_connection_attempt = 0
+    _backoff_time = 1  # Initial backoff time in seconds
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DBConnectionManager, cls).__new__(cls)
+            cls._instance._initialize_pool()
+        return cls._instance
+    
+    def _release_socket(self):
+        """Release any existing socket connections"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.close()
+        except:
+            pass
+
+    def _wait_before_retry(self):
+        """Implement exponential backoff with jitter"""
+        current_time = time.time()
+        time_since_last_attempt = current_time - self._last_connection_attempt
+        
+        if time_since_last_attempt < self._backoff_time:
+            sleep_time = self._backoff_time - time_since_last_attempt
+            # Add jitter to prevent thundering herd
+            sleep_time += random.uniform(0, 1)
+            time.sleep(sleep_time)
+        
+        self._backoff_time = min(self._backoff_time * 2, 60)  # Max backoff of 60 seconds
+        self._last_connection_attempt = time.time()
+
+    def _check_connection_health(self, conn):
+        """Check if connection is healthy"""
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except:
+            return False
+    
+    def _initialize_pool(self):
+        """Initialize the connection pool with retry mechanism and socket management"""
+        if self._pool is None:
+            pool_config = {
+                "pool_name": "face_recognition_pool",
+                "pool_size": 5,
+                "host": DB_HOST,
+                "database": DB_NAME,
+                "user": DB_USER,
+                "password": DB_PASS,
+                "port": DB_PORT,
+                "pool_reset_session": True,
+                "connect_timeout": 5,
+                "use_pure": True
+            }
+            
+            max_retries = 3
+            retry_count = 0
+            
+            while retry_count < max_retries:
+                try:
+                    # Release any existing connections
+                    self._release_socket()
+                    
+                    # Wait before retry using exponential backoff
+                    if retry_count > 0:
+                        self._wait_before_retry()
+                    
+                    self._pool = mysql.connector.pooling.MySQLConnectionPool(**pool_config)
+                    
+                    # Verify pool health
+                    test_conn = self._pool.get_connection()
+                    if self._check_connection_health(test_conn):
+                        test_conn.close()
+                        logging.info("MySQL connection pool initialized successfully")
+                        self._backoff_time = 1  # Reset backoff time on success
+                        break
+                    else:
+                        raise Exception("Connection health check failed")
+                        
+                except Error as err:
+                    retry_count += 1
+                    if retry_count == max_retries:
+                        logging.error(f"Failed to initialize connection pool after {max_retries} attempts: {err}")
+                        raise
+                    logging.warning(f"Attempt {retry_count} failed, retrying...")
+                finally:
+                    self._release_socket()
+    
+    @contextmanager
+    def get_connection(self):
+        """Get a connection from the pool with automatic cleanup and health check"""
+        conn = None
+        try:
+            conn = self._pool.get_connection()
+            if not self._check_connection_health(conn):
+                # If connection is unhealthy, try to reinitialize pool
+                self._pool = None
+                self._initialize_pool()
+                conn = self._pool.get_connection()
+            yield conn
+        except Error as err:
+            logging.error(f"Database connection error: {err}")
+            raise
+        finally:
+            if conn is not None:
+                try:
+                    if conn.is_connected():
+                        conn.close()
+                except:
+                    pass
+    
+    def cleanup(self):
+        """Cleanup all connections in the pool"""
+        if self._pool is not None:
+            for conn in self._pool._cnx_queue:
+                try:
+                    if conn.is_connected():
+                        conn.close()
+                except:
+                    pass
+            self._pool = None
+            self._release_socket()
+            logging.info("Connection pool cleaned up")
+    
+    def __del__(self):
+        """Ensure cleanup on object destruction"""
+        self.cleanup()
 
 class FaceRecognition:
+    _db_manager = DBConnectionManager()
+    
     @staticmethod
-    def connect_db():
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS,
-            port=DB_PORT
-        )
-        return conn
-
+    def get_connection():
+        return DBConnectionManager().get_connection()
+    
     @staticmethod
     def get_face_descriptor(img, detector, shape_predictor, face_rec_model):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -60,37 +197,35 @@ class FaceRecognition:
 
     @staticmethod
     def fetch_embeddings_from_db(person_id):
-        conn = FaceRecognition.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT angle, embedding FROM face_embeddings WHERE person_id = %s
-        """, (person_id,))
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        with FaceRecognition.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT angle, embedding FROM face_embeddings WHERE person_id = %s
+            """, (person_id,))
+            rows = cursor.fetchall()
+            cursor.close()
 
-        embeddings = []
-        for angle, stored_embedding in rows:
-            try:
-                if isinstance(stored_embedding, str):
-                    embedding_array = np.array(json.loads(stored_embedding), dtype=np.float64)
-                else:
-                    embedding_array = np.array(stored_embedding, dtype=np.float64)
-                embedding_array = embedding_array.flatten()
-                embeddings.append((angle, embedding_array))
-            except Exception as e:
-                print(f"Error parsing embedding: {e}")
+            embeddings = []
+            for angle, stored_embedding in rows:
+                try:
+                    if isinstance(stored_embedding, str):
+                        embedding_array = np.array(json.loads(stored_embedding), dtype=np.float64)
+                    else:
+                        embedding_array = np.array(stored_embedding, dtype=np.float64)
+                    embedding_array = embedding_array.flatten()
+                    embeddings.append((angle, embedding_array))
+                except Exception as e:
+                    print(f"Error parsing embedding: {e}")
         
         return embeddings
 
     @staticmethod
     def find_matching_person(new_embedding):
-        conn = FaceRecognition.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT person_id FROM face_embeddings")
-        person_ids = [row[0] for row in cursor.fetchall()]
-        cursor.close()
-        conn.close()
+        with FaceRecognition.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT person_id FROM face_embeddings")
+            person_ids = [row[0] for row in cursor.fetchall()]
+            cursor.close()
         
         new_embedding = np.array(new_embedding, dtype=np.float64).flatten()
 
@@ -103,15 +238,14 @@ class FaceRecognition:
 
     @staticmethod
     def log_activity(person_id, confidence_level):
-        conn = FaceRecognition.connect_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO activity_log (person_id, confidence_level)
-            VALUES (%s, %s)
-        """, (person_id, confidence_level))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        with FaceRecognition.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO activity_log (person_id, confidence_level)
+                VALUES (%s, %s)
+            """, (person_id, confidence_level))
+            conn.commit()
+            cursor.close()
 
     @staticmethod
     def show_match_popup(person_id, parent):
@@ -293,8 +427,8 @@ class FeedbackWindow:
             
             try:
                 # Connect to the database
-                conn = FaceRecognition.connect_db()
-                cursor = conn.cursor()
+                with FaceRecognition.get_connection() as conn:
+                    cursor = conn.cursor()
                 
                 # Update frequency for the selected employee
                 query = "UPDATE employee_selection SET Frequency = Frequency + 1 WHERE Name = %s"
@@ -310,12 +444,6 @@ class FeedbackWindow:
             except Exception as e:
                 print(f"Database error: {e}")
             finally:
-                # Close the database connection
-                if 'cursor' in locals():
-                    cursor.close()
-                if 'conn' in locals():
-                    conn.close()
-                
                 # Close the Tkinter window
                 self.app.destroy()
         else:

@@ -1,46 +1,55 @@
 import PyInstaller.__main__
 import os
 import sys
+import shutil
 
-def build_executable():
-    # Get the absolute path of the current directory
-    current_dir = os.path.dirname(os.path.abspath(__file__))
+def clean_build_folders():
+    """Clean build and dist folders"""
+    folders = ['build', 'dist']
+    for folder in folders:
+        if os.path.exists(folder):
+            shutil.rmtree(folder)
     
-    # Define paths
-    src_dir = os.path.join(current_dir, 'src')
-    models_dir = os.path.join(current_dir, 'models')
-    app_path = os.path.join(src_dir, 'facial_recognition_app.py')
+    # Remove spec file
+    spec_file = 'FaceRecognition.spec'
+    if os.path.exists(spec_file):
+        os.remove(spec_file)
+
+def build_app():
+    """Build the application"""
+    # Clean previous builds
+    clean_build_folders()
     
-    # Ensure the models directory exists
-    if not os.path.exists(models_dir):
-        print(f"Error: Models directory not found at {models_dir}")
-        return
-        
-    # PyInstaller options
-    options = [
-        app_path,                          # Your main script
-        '--name=FaceRecognition',          # Name of the executable
-        '--onefile',                       # Create a single executable
-        '--windowed',                      # Window mode (no console)
-        '--clean',                         # Clean cache
-        f'--add-data={models_dir};models', # Add models directory
-        '--hidden-import=cv2',
+    # Get the absolute path to the shape predictor and face recognition model
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    shape_predictor = os.path.join(base_path, 'models', 'shape_predictor_68_face_landmarks.dat')
+    face_rec_model = os.path.join(base_path, 'models', 'dlib_face_recognition_resnet_model_v1.dat')
+    
+    # Define PyInstaller arguments
+    args = [
+        'src/facial_recognition_app.py',  # Your main script
+        '--name=FaceRecognition',         # Name of the executable
+        '--onefile',                      # Create a single executable
+        '--windowed',                     # Windows only: hide the console
+        f'--add-data={shape_predictor};models',  # Include shape predictor model
+        f'--add-data={face_rec_model};models',   # Include face recognition model
+        '--hidden-import=mysql.connector.locales',
+        '--hidden-import=mysql.connector.locales.eng',
+        '--hidden-import=mysql.connector.plugins',
+        '--hidden-import=mysql.connector.plugins.mysql_native_password',
+        '--hidden-import=PIL._tkinter_finder',
         '--hidden-import=dlib',
-        '--hidden-import=PIL',
-        '--hidden-import=PIL.Image',
-        '--hidden-import=PIL.ImageTk',
+        '--hidden-import=cv2',
         '--hidden-import=numpy',
-        '--hidden-import=mysql.connector',
-        '--hidden-import=scipy',
         '--hidden-import=tkinter',
-        '--hidden-import=tkinter.ttk',
-        '--hidden-import=tkinter.messagebox',
-        '--collect-data=dlib',             # Include dlib data files
-        '--collect-data=cv2',              # Include OpenCV data files
+        '--clean',                        # Clean PyInstaller cache
+        '--log-level=INFO',              # Detailed logging
     ]
     
     # Run PyInstaller
-    PyInstaller.__main__.run(options)
+    PyInstaller.__main__.run(args)
+    
+    print("Build completed successfully!")
 
-if __name__ == '__main__':
-    build_executable()
+if __name__ == "__main__":
+    build_app()

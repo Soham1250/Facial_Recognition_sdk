@@ -1,17 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_data_files
-
-datas = [('c:\\Users\\NBP\\Desktop\\Internship\\SDK Development\\SDK Development\\Facial-Recognition-SDK\\models', 'models')]
-datas += collect_data_files('dlib')
-datas += collect_data_files('cv2')
 
 
 a = Analysis(
-    ['c:\\Users\\NBP\\Desktop\\Internship\\SDK Development\\SDK Development\\Facial-Recognition-SDK\\src\\facial_recognition_app.py'],
+    ['src\\facial_recognition_app.py'],
     pathex=[],
     binaries=[],
-    datas=datas,
-    hiddenimports=['cv2', 'dlib', 'PIL', 'PIL.Image', 'PIL.ImageTk', 'numpy', 'mysql.connector', 'scipy', 'tkinter', 'tkinter.ttk', 'tkinter.messagebox'],
+    datas=[('c:\\Users\\NBP\\Desktop\\Internship\\SDK Development\\SDK Development\\Facial-Recognition-SDK\\models\\shape_predictor_68_face_landmarks.dat', 'models'), ('c:\\Users\\NBP\\Desktop\\Internship\\SDK Development\\SDK Development\\Facial-Recognition-SDK\\models\\dlib_face_recognition_resnet_model_v1.dat', 'models')],
+    hiddenimports=['mysql.connector.locales', 'mysql.connector.locales.eng', 'mysql.connector.plugins', 'mysql.connector.plugins.mysql_native_password', 'PIL._tkinter_finder', 'dlib', 'cv2', 'numpy', 'tkinter'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
