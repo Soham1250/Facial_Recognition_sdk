@@ -1,5 +1,4 @@
 import tkinter as tk
-from tkinter import ttk
 import cv2
 from PIL import Image, ImageTk
 import threading
@@ -17,13 +16,13 @@ class FaceRecognitionGUI:
         self.video_frame.pack(pady=20)
 
         # Control buttons
-        self.start_button = ttk.Button(self.root, text="Start Recognition", command=self.start_recognition)
+        self.start_button = tk.Button(self.root, text="Start Recognition", command=self.start_recognition)
         self.start_button.pack(pady=10)
 
-        self.stop_button = ttk.Button(self.root, text="Stop Recognition", command=self.stop_recognition, state="disabled")
+        self.stop_button = tk.Button(self.root, text="Stop Recognition", command=self.stop_recognition, state="disabled")
         self.stop_button.pack(pady=10)
 
-        self.exit_button = ttk.Button(self.root, text="Exit", command=self.exit_program)
+        self.exit_button = tk.Button(self.root, text="Exit", command=self.exit_program)
         self.exit_button.pack(pady=10)
 
         # Label to display accuracy calculation and result
@@ -64,9 +63,8 @@ class FaceRecognitionGUI:
 
         # Calculate and display accuracy
         if self.total_scans[0] > 0:
-            total = self.total_scans[0]
-            accuracy = (self.successful_scans[0] / (total-1)) * 100
-            calculation_text = f"Accuracy: {self.successful_scans[0]} / {total} = {accuracy:.2f}%"
+            accuracy = (self.successful_scans[0] / self.total_scans[0]) * 100
+            calculation_text = f"Accuracy: {self.successful_scans[0]} / {self.total_scans[0]} = {accuracy:.2f}%"
         else:
             accuracy = 0.0
             calculation_text = "No scans performed."
