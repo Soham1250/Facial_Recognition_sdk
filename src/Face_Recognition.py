@@ -6,8 +6,10 @@ import os, sys, time, subprocess
 import mysql.connector  # type: ignore
 from scipy.spatial import distance  # type: ignore
 import tkinter as tk
-from tkinter import ttk
-from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
+import subprocess
+import time
+from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
+
 
 def connect_db():
     conn = mysql.connector.connect(
