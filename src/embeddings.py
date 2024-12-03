@@ -6,11 +6,7 @@ import dlib #type:ignore
 import json  # Import the JSON module
 import hashlib
 import base64
-<<<<<<< HEAD
-from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
-=======
 from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
->>>>>>> d7c03bb61e54695e59dedfb212ed1c365e5030d8
 
 def connect_db():
     conn = mysql.connector.connect(
@@ -87,26 +83,17 @@ def process_image(image_path):
     return features
 
 # Example usage
-<<<<<<< HEAD
-front_image_path = 'data/sample_images/3028_Ketan_F.jpg'
-left_image_path = 'data/sample_images/3028_Ketan_L.jpg'
-right_image_path = 'data/sample_images/3028_Ketan_R.jpg'
-=======
+
 front_image_path = 'Path to Front face image'
 left_image_path = 'Path to Left face image'
 right_image_path = 'Path to Right face image'
->>>>>>> d7c03bb61e54695e59dedfb212ed1c365e5030d8
 
 front_features = process_image(front_image_path)
 left_features = process_image(left_image_path)
 right_features = process_image(right_image_path)
 
 # Insert embeddings into the database
-<<<<<<< HEAD
-person_id = '3028_Ketan'
-=======
 person_id = 'Person ID / Name'
->>>>>>> d7c03bb61e54695e59dedfb212ed1c365e5030d8
 if front_features:
     for feature in front_features:
         insert_embedding(person_id, 'front', feature)
