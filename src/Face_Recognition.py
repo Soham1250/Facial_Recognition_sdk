@@ -9,7 +9,6 @@ import tkinter as tk
 from tkinter import ttk
 from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
 
-
 def connect_db():
     conn = mysql.connector.connect(
         host=DB_HOST,
@@ -19,10 +18,6 @@ def connect_db():
         port=DB_PORT
     )
     return conn
-
-# File paths
-SHAPE_PREDICTOR_PATH = "models/shape_predictor_68_face_landmarks.dat"
-FACE_REC_MODEL_PATH = "models/dlib_face_recognition_resnet_model_v1.dat"
 
 # Check if files exist
 def check_file(path):
@@ -59,10 +54,8 @@ def get_face_descriptor(img, detector, shape_predictor, face_rec_model):
 
 # Compute the distance between embeddings
 def compute_distance(embedding1, embedding2):
-    # Ensure both embeddings are 1-D arrays of type float64
     embedding1 = np.array(embedding1, dtype=np.float64).flatten()
     embedding2 = np.array(embedding2, dtype=np.float64).flatten()
-    
     return distance.euclidean(embedding1, embedding2)
 
 # Determine if embeddings match based on a threshold
@@ -72,25 +65,21 @@ def is_match(embedding1, embedding2, threshold=0.4):
 
 def calculate_confidence(embedding1, embedding2, threshold=0.3):
     euclidean_distance = compute_distance(embedding1, embedding2)
-    confidence_level = 100- euclidean_distance*10 
+    confidence_level = 100 - euclidean_distance * 10 
     return confidence_level
 
-
 def run_access_control_script():
-        script_path = "src/report.py"  
-        subprocess.run(["python", script_path])
-
+    script_path = "src/report.py"  
+    subprocess.run(["python", script_path])
 
 # Function to display pop-up using Tkinter with styling
 def show_match_popup(person_id):
-    # Create the main window with a background color
     popup = tk.Tk()
     popup.title("Face Match Found")
     popup.geometry("400x300")
-    popup.configure(bg="#f7f7f7")  # Light background for an elegant look
+    popup.configure(bg="#f7f7f7")
 
-    # Header frame with a distinct background color
-    header_frame = tk.Frame(popup, bg="#4a90e2")  # Blue header
+    header_frame = tk.Frame(popup, bg="#4a90e2")
     header_frame.grid(row=0, column=0, sticky="nsew")
     header_label = tk.Label(
         header_frame,
@@ -101,7 +90,6 @@ def show_match_popup(person_id):
     )
     header_label.pack(pady=10, padx=10)
 
-    # Configure row and column weights for layout control
     popup.grid_rowconfigure(0, weight=1)
     popup.grid_rowconfigure(1, weight=3)
     popup.grid_rowconfigure(2, weight=1)
@@ -109,39 +97,33 @@ def show_match_popup(person_id):
     popup.grid_rowconfigure(4, weight=1)
     popup.grid_columnconfigure(0, weight=1)
 
-    # Display the person ID with a cleaner label style
     label_text = f"Person ID: {person_id}"
     label = tk.Label(
         popup, 
         text=label_text, 
         font=("Helvetica", 14), 
         bg="#f7f7f7", 
-        fg="#2c3e50"  # Slate blue color for a professional look
+        fg="#2c3e50"
     )
     label.grid(row=1, column=0, padx=10, pady=(20, 10))
 
-    # Use ttk for styled buttons with accent colors
     style = ttk.Style()
     style.configure(
         "Accent.TButton",
         font=("Helvetica", 12),
         padding=8,
-       
     )
     style.map(
         "Accent.TButton",
-        background=[("active", "#357ABD")],  # Darker blue on hover
+        background=[("active", "#357ABD")]
     )
 
-    # Create an OK button to close the pop-up only
     ok_button = ttk.Button(popup, text="OK", command=popup.destroy)
     ok_button.grid(row=2, column=0, pady=10)
 
-    # Create a "Not you?" button for redirecting
     not_you_button = ttk.Button(popup, text="Not you?", command=run_access_control_script)
     not_you_button.grid(row=4, column=0, pady=(5, 20))
 
-    # Run the Tkinter main loop
     popup.mainloop()
 
 # Fetch stored embeddings from the database
@@ -155,21 +137,14 @@ def fetch_embeddings_from_db(person_id):
     cursor.close()
     conn.close()
 
-    # Convert embeddings to NumPy arrays
     embeddings = []
     for angle, stored_embedding in rows:
-        # Parse stored embedding if it's in a JSON format or a delimited string
         try:
             if isinstance(stored_embedding, str):
-                # Convert from JSON string to Python list and then to NumPy array
                 embedding_array = np.array(json.loads(stored_embedding), dtype=np.float64)
             else:
-                # If not a string, directly convert to NumPy array with proper type
                 embedding_array = np.array(stored_embedding, dtype=np.float64)
-
-            # Ensure it's a 1-D array
             embedding_array = embedding_array.flatten()
-
             embeddings.append((angle, embedding_array))
         except Exception as e:
             print(f"Error parsing embedding: {e}")
@@ -185,13 +160,11 @@ def find_matching_person(new_embedding):
     cursor.close()
     conn.close()
     
-    # Convert new_embedding to a 1-D array if not already
     new_embedding = np.array(new_embedding, dtype=np.float64).flatten()
 
     for person_id in person_ids:
         embeddings = fetch_embeddings_from_db(person_id)
         for angle, stored_embedding in embeddings:
-            # Compare using is_match function
             if is_match(new_embedding, stored_embedding):
                 return person_id
     return None
@@ -207,50 +180,30 @@ def log_activity(person_id, confidence_level):
     cursor.close()
     conn.close()
 
-
-# Load models
-detector, shape_predictor, face_rec_model = load_models()
-
-# Main function
-def main():
-
-    # Load and process the input image
-    input_image_path = "data/temp/temp.jpg" 
-    image = cv2.imread(input_image_path)
+def recognize_face(image_path, total_scans, successful_scans):
+    detector, shape_predictor, face_rec_model = load_models()
+    image = cv2.imread(image_path)
     
     if image is None:
-        print(f"Error loading image: {input_image_path}")
-        return
-    start_time = time.time()
+        print(f"Error loading image: {image_path}")
+        return False
+    
     face_descriptors, _ = get_face_descriptor(image, detector, shape_predictor, face_rec_model)
-    end_time = time.time()
-    execution_time = end_time - start_time
-    print(f"Execution time get_face_descriptor: {execution_time} seconds")
     if not face_descriptors:
         print("No faces detected in the image.")
-        return
-    
-    # Assume the first detected face is the one we want to recognize
-    new_embedding = face_descriptors[0]
+        return False
 
-    # Find matching person
-    start_time = time.time()
+    total_scans[0] += 1  # Increment total scans
+    new_embedding = face_descriptors[0]
     person_id = find_matching_person(new_embedding)
-    end_time = time.time()
-    execution_time = end_time - start_time
-    print(f"Execution time db: {execution_time} seconds")
+    
     if person_id:
         print(f"Face matched with person ID: {person_id}")
-        confidence_level = calculate_confidence(new_embedding, np.array(new_embedding))  # Use a reference embedding for comparison
+        confidence_level = calculate_confidence(new_embedding, np.array(new_embedding))
         log_activity(person_id, confidence_level)
-    
-        # Display the Tkinter pop-up with the match details
+        successful_scans[0] += 1  # Increment successful scans
         show_match_popup(person_id)
+        return True
     else:
         print("No matching faces found in the database.")
-        run_access_control_script()
-        
-
-
-if __name__ == "__main__":
-    main()
+        return False

@@ -83,16 +83,16 @@ def process_image(image_path):
     return features
 
 # Example usage
-front_image_path = 'data/sample_images/3027_MaheshBh_F.jpg'
-left_image_path = 'data/sample_images/3027_MaheshBh_L.jpg'
-right_image_path = 'data/sample_images/3027_MaheshBh_R.jpg'
+front_image_path = 'data/sample_images/3028_Ketan_F.jpg'
+left_image_path = 'data/sample_images/3028_Ketan_L.jpg'
+right_image_path = 'data/sample_images/3028_Ketan_R.jpg'
 
 front_features = process_image(front_image_path)
 left_features = process_image(left_image_path)
 right_features = process_image(right_image_path)
 
 # Insert embeddings into the database
-person_id = '3027_MaheshBh'
+person_id = '3028_Ketan'
 if front_features:
     for feature in front_features:
         insert_embedding(person_id, 'front', feature)
