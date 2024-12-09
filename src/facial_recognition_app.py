@@ -25,6 +25,157 @@ class DBConnectionManager:
     _pool = None
     _last_connection_attempt = 0
     _backoff_time = 1  # Initial backoff time in seconds
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DBConnectionManager, cls).__new__(cls)
+            cls._instance._initialize_pool()
+            cls._instance._start_cleanup_thread()
+        return cls._instance
+
+    def _release_socket(self):
+        """Release any existing socket connections"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.close()
+        except Exception as e:
+            logging.warning(f"Error releasing socket: {e}")
+
+    def _wait_before_retry(self):
+        """Implement exponential backoff with jitter"""
+        sleep_time = self._backoff_time + random.uniform(0, 0.5)  # Add jitter
+        time.sleep(sleep_time)
+        self._backoff_time = min(self._backoff_time * 2, 60)  # Max backoff 60 seconds
+        self._last_connection_attempt = time.time()
+
+    def _check_connection_health(self, conn):
+        """Check if connection is healthy"""
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+            cursor.close()
+            return True
+        except Exception:
+            return False
+
+    def _initialize_pool(self):
+        """Initialize the connection pool with retry mechanism and socket management"""
+        if self._pool is None:
+            pool_config = {
+                "pool_name": "face_recognition_pool",
+                "pool_size": 5,
+                "host": DB_HOST,
+                "database": DB_NAME,
+                "user": DB_USER,
+                "password": DB_PASS,
+                "port": DB_PORT,
+                "pool_reset_session": True,
+                "connect_timeout": 5,
+                "use_pure": True,
+                "autocommit": True,
+            }
+
+            max_retries = 3
+            retry_count = 0
+
+            while retry_count < max_retries:
+                try:
+                    self._release_socket()
+                    if retry_count > 0:
+                        self._wait_before_retry()
+
+                    self._pool = mysql.connector.pooling.MySQLConnectionPool(**pool_config)
+
+                    # Verify pool health
+                    test_conn = self._pool.get_connection()
+                    if self._check_connection_health(test_conn):
+                        test_conn.close()
+                        logging.info("MySQL connection pool initialized successfully")
+                        self._backoff_time = 1  # Reset backoff time on success
+                        break
+                    else:
+                        raise Exception("Connection health check failed")
+
+                except Error as err:
+                    retry_count += 1
+                    logging.warning(f"Attempt {retry_count} failed: {err}")
+                    if retry_count == max_retries:
+                        logging.error(f"Failed to initialize connection pool after {max_retries} attempts")
+                        raise
+
+    @contextmanager
+    def get_connection(self):
+        """Get a connection from the pool with automatic cleanup and health check"""
+        conn = None
+        try:
+            conn = self._pool.get_connection()
+            if not self._check_connection_health(conn):
+                logging.warning("Unhealthy connection detected, reinitializing pool")
+                self._initialize_pool()
+                conn = self._pool.get_connection()
+
+            conn.cmd_reset_connection()
+            yield conn
+
+        except Error as err:
+            logging.error(f"Database connection error: {err}")
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if conn:
+                try:
+                    if conn.is_connected():
+                        conn.close()
+                except Exception as e:
+                    logging.error(f"Error closing connection: {e}")
+
+    def _cleanup_idle_connections(self):
+        """Clean up idle connections in the pool"""
+        if self._pool:
+            for conn in list(self._pool._cnx_queue):
+                try:
+                    if conn.is_connected():
+                        conn.ping(reconnect=False, attempts=1, delay=0)
+                    else:
+                        conn.close()
+                except Exception as e:
+                    logging.warning(f"Error during idle connection cleanup: {e}")
+
+    def _start_cleanup_thread(self):
+        """Start a background thread to clean up idle connections"""
+        def cleanup_task():
+            while True:
+                self._cleanup_idle_connections()
+                time.sleep(300)  # Run every 5 minutes
+
+        threading.Thread(target=cleanup_task, daemon=True).start()
+
+    def cleanup(self):
+        """Cleanup all connections in the pool"""
+        if self._pool:
+            for conn in self._pool._cnx_queue:
+                try:
+                    if conn.is_connected():
+                        conn.close()
+                except Exception:
+                    pass
+            self._pool = None
+            self._release_socket()
+            logging.info("Connection pool cleaned up")
+
+    def __del__(self):
+        """Ensure cleanup on object destruction"""
+        self.cleanup()
+    _instance = None
+    _pool = None
+    _last_connection_attempt = 0
+    _backoff_time = 1  # Initial backoff time in seconds
     
     def __new__(cls):
         if cls._instance is None:
@@ -79,7 +230,12 @@ class DBConnectionManager:
                 "port": DB_PORT,
                 "pool_reset_session": True,
                 "connect_timeout": 5,
-                "use_pure": True
+                "use_pure": True,
+                "autocommit": True,
+                "get_warnings": True,
+                "raise_on_warnings": True,
+                "connection_timeout": 10,
+                "pool_reset_session": True
             }
             
             max_retries = 3
@@ -126,13 +282,23 @@ class DBConnectionManager:
                 self._pool = None
                 self._initialize_pool()
                 conn = self._pool.get_connection()
+            
+            # Reset session to ensure clean state
+            conn.cmd_reset_connection()
             yield conn
+            
         except Error as err:
             logging.error(f"Database connection error: {err}")
+            if conn:
+                try:
+                    conn.rollback()  # Rollback any pending transactions
+                except:
+                    pass
             raise
         finally:
             if conn is not None:
                 try:
+                    conn.cmd_reset_connection()  # Reset connection state
                     if conn.is_connected():
                         conn.close()
                 except:
