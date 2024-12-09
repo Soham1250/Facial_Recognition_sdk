@@ -1,7 +1,10 @@
 data/temp/temp.jpg
+<<<<<<< HEAD
 
 # Build and distribution files
 dist/
 build/
 *.exe
 *.pkg
+=======
+>>>>>>> 14a336c926137c39ba81b31825593bc3e70fe3b3
