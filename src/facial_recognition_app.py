@@ -1,3 +1,4 @@
+import queue
 import tkinter as tk
 from tkinter import ttk
 import cv2
@@ -13,12 +14,13 @@ import json
 from scipy.spatial import distance
 import subprocess
 import time
-from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH, SAVE_PATH
+from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SAVE_PATH, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
 import logging
 from contextlib import contextmanager
 import time
 import socket
 import random
+import sys
 
 class DBConnectionManager:
     _instance = None
@@ -110,7 +112,7 @@ class DBConnectionManager:
         """Get a connection from the pool with automatic cleanup and health check"""
         conn = None
         try:
-            conn = self._pool.get_connection()
+            conn = self._pool.get_connection(wait_timeout=10)  # Wait up to 10 seconds
             if not self._check_connection_health(conn):
                 logging.warning("Unhealthy connection detected, reinitializing pool")
                 self._initialize_pool()
@@ -484,6 +486,26 @@ class FaceRecognition:
     def get_connection():
         return DBConnectionManager().get_connection()
 
+
+    @staticmethod
+    def initialize_embeddings_dict():
+        """Fetch all embeddings from the database and store them in a dictionary."""
+        FaceRecognition._embeddings_dict = {}
+        with FaceRecognition.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT person_id, embedding FROM face_embeddings")
+            rows = cursor.fetchall()
+            cursor.close()
+
+        for person_id, embedding in rows:
+            try:
+                embedding_array = np.array(json.loads(embedding), dtype=np.float64)
+                if person_id not in FaceRecognition._embeddings_dict:
+                    FaceRecognition._embeddings_dict[person_id] = []
+                FaceRecognition._embeddings_dict[person_id].append(embedding_array)
+            except Exception as e:
+                print(f"Error parsing embedding for person_id {person_id}: {e}")
+
     @staticmethod
     def get_face_descriptor(img, detector, shape_predictor, face_rec_model):
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -499,6 +521,11 @@ class FaceRecognition:
             face_descriptors.append(np.array(descriptor))
 
         return face_descriptors, faces
+
+    @staticmethod
+    def destroy_embeddings_dict():
+        """Clear the embeddings dictionary when the application is closed."""
+        FaceRecognition._embeddings_dict = {}
 
     @staticmethod
     def compute_distance(embedding1, embedding2):
@@ -519,17 +546,11 @@ class FaceRecognition:
 
     @staticmethod
     def find_matching_person(new_embedding):
-        with FaceRecognition.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT person_id FROM face_embeddings")
-            person_ids = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-
+        """Find a matching person_id using the dictionary instead of database calls."""
         new_embedding = np.array(new_embedding, dtype=np.float64).flatten()
 
-        for person_id in person_ids:
-            embeddings = FaceRecognition.fetch_embeddings_from_db(person_id)
-            for angle, stored_embedding in embeddings:
+        for person_id, embeddings in FaceRecognition._embeddings_dict.items():
+            for stored_embedding in embeddings:
                 if FaceRecognition.is_match(new_embedding, stored_embedding):
                     return person_id
         return None
@@ -661,6 +682,15 @@ class FaceRecognition:
             conn.commit()
             cursor.close()
 
+
+    @staticmethod
+    def add_embedding_to_dict(person_id, embedding):
+        """Add a new embedding to the dictionary after adding it to the database."""
+        embedding_array = np.array(json.loads(embedding), dtype=np.float64)
+        if person_id not in FaceRecognition._embeddings_dict:
+            FaceRecognition._embeddings_dict[person_id] = []
+        FaceRecognition._embeddings_dict[person_id].append(embedding_array)
+
     @staticmethod
     def show_match_popup(person_id, parent):
         popup = tk.Toplevel(parent)
@@ -740,6 +770,9 @@ class CoreFunctions:
             print(f"Error loading image: {image_path}")
             return False
         
+        # Show the captured image before recognition
+
+
         face_descriptors, _ = FaceRecognition.get_face_descriptor(
             image, self.detector, self.shape_predictor, self.face_rec_model
         )
@@ -754,8 +787,10 @@ class CoreFunctions:
         
         if person_id:
             successful_scans[0] += 1
+            self.show_captured_image(image_path, parent)
+            
             if person_id != FaceRecognition._last_recognized_user:
-            # Show full popup with confirmation options
+                # Show the popup
                 FaceRecognition._last_recognized_user = person_id
 
                 popup = tk.Toplevel(parent)
@@ -774,13 +809,13 @@ class CoreFunctions:
                 message = ttk.Label(popup, text=f"Match found: {person_id}", font=("Helvetica", 12))
                 message.pack(pady=20)
 
+                # Add an OK button
+                ok_button = ttk.Button(popup, text="OK", command=popup.destroy)
+                ok_button.pack()
+                
                 # Create frame for buttons
                 button_frame = ttk.Frame(popup)
                 button_frame.pack(pady=10)
-
-                # Add OK button
-                ok_button = ttk.Button(button_frame, text="OK", command=popup.destroy)
-                ok_button.pack(side=tk.LEFT, padx=10)
 
                 # Add "Not you?" button
                 def open_feedback():
@@ -791,19 +826,46 @@ class CoreFunctions:
                 not_you_button = ttk.Button(button_frame, text="Not you?", command=open_feedback)
                 not_you_button.pack(side=tk.LEFT, padx=10)
 
-                # Make popup modal
+                # Make the popup modal
                 popup.transient(parent)
                 popup.grab_set()
                 popup.wait_window()
+
+                # Delay for 10 seconds
+                print(f"Waiting 5 seconds after recognizing {person_id}...")
+                time.sleep(5)  # Add the delay here
             else:
-                # If the person is the same as the last recognized user, show a brief message
-                popup = tk.Toplevel(parent)
-                popup.title("Match Found")
-                popup.geometry("300x100")
-                message = ttk.Label(popup, text=f"Welcome back: {person_id}", font=("Helvetica", 12))
-                message.pack(pady=20)
-                popup.after(2000, popup.destroy)  # Auto-close after 2 seconds
+                print(f"User {person_id} already recognized recently.")
         return False
+    
+
+    def show_captured_image(self, image_path, parent):
+        """Displays the captured image in a popup window and closes it after a duration."""
+        captured_image_popup = tk.Toplevel(parent)
+        captured_image_popup.title("Captured Image")
+        
+        # Load the image
+        img = Image.open(image_path)
+        img = img.resize((300, 300))  # Resize for display
+        imgtk = ImageTk.PhotoImage(img)
+        
+        # Display the image
+        img_label = ttk.Label(captured_image_popup, image=imgtk)
+        img_label.image = imgtk  # Keep a reference to avoid garbage collection
+        img_label.pack()
+        
+        # Set the duration for how long the popup will be displayed (in milliseconds)
+        duration = 2500 # 5 seconds
+        
+        # Schedule the popup to close after the duration
+        captured_image_popup.after(duration, captured_image_popup.destroy)
+        
+        # Make the popup modal
+        captured_image_popup.transient(parent)
+        captured_image_popup.grab_set()
+        captured_image_popup.wait_window()
+
+
 
 class FeedbackWindow:
     def __init__(self):
@@ -823,25 +885,25 @@ class FeedbackWindow:
         self.employee_names = ["Ellaiah Gangadhari",
             "Gautam Binniwale",
             "Kishor B. Patil",
-            "Krutik Mandre",
             "Krishna Naik",
+            "Krutik Mandre",
             "M Jayadevi",
             "Mahesh S. Bhoop",
             "Mannu Vishwakarma",
-            "Manoj  Yadav",
+            "Manoj Yadav",
+            "Omkar Nikam",
             "Pritesh Mistry",
             "Priti Gaikwad",
             "Roopnarayan Gupta",
+            "Sagar Tondvalkar",
             "Sachin Patil",
-            "Sagar  Tondvalkar",
             "Sandesh Kurtdkar",
             "Shyamal Mishra",
+            "Soham Pansare",
             "Sonal Mayekar",
-            "Sushil  Khetre",
+            "Sushil Khetre",
             "Vaibhav Pawar",
-            "Vikrant Sawant",
-            "Omkar Nikam",
-            "Soham Pansare"]
+            "Vikrant Sawant"]
         
         # Add the combobox for employee selection
         self.selected_name = tk.StringVar()
@@ -881,33 +943,32 @@ class FeedbackWindow:
         self.app.geometry(f"{width}x{height}+{x}+{y}")
 
     def submit_selection(self):
-        selected_employee = self.employee_combo.get()  # Get directly from combobox
+        selected_employee = self.employee_combo.get()  # Get the selected employee name
         if selected_employee:
-            print(f"Selected Employee: {selected_employee}")  # Print the selected name to the terminal
-            
             try:
-                # Connect to the database
+                # Connect to the database using DBConnectionManager
                 with FaceRecognition.get_connection() as conn:
                     cursor = conn.cursor()
-                
-                # Update frequency for the selected employee
-                query = "UPDATE employee_selection SET Frequency = Frequency + 1 WHERE Name = %s"
-                cursor.execute(query, (selected_employee,))
-                rows_affected = cursor.rowcount
-                conn.commit()  # Commit the transaction to save changes
-                
-                if rows_affected > 0:
-                    print(f"Updated frequency for {selected_employee}")
-                else:
-                    print(f"No record found for {selected_employee}")
-                
+                    
+                    # Increment the Frequency column for the selected employee
+                    query = "UPDATE employee_selection SET Frequency = Frequency + 1 WHERE Name = %s"
+                    cursor.execute(query, (selected_employee,))
+                    conn.commit()  # Commit the transaction
+                    
+                    # Show success message to the user
+                    from tkinter import messagebox
+                    messagebox.showinfo("Thank you correction!")
             except Exception as e:
-                print(f"Database error: {e}")
+                # Show error message in case of any database issue
+                from tkinter import messagebox
+                messagebox.showerror("Error", f"Failed to update frequency: {e}")
             finally:
-                # Close the Tkinter window
+                # Close the feedback window
                 self.app.destroy()
         else:
-            print("Please select an employee name")
+            # Show a warning if no employee is selected
+            from tkinter import messagebox
+            messagebox.showwarning("Warning", "Please select an employee name.")
 
     def show(self):
         self.app.mainloop()
@@ -915,98 +976,164 @@ class FeedbackWindow:
 class GUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        
         self.title("Face Recognition")
         self.geometry("1280x720")
-        self.configure(bg="#f7f7f7")
 
-        # Initialize CoreFunctions
-        self.core = CoreFunctions()
+        # Use grid layout for main window
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
 
-        # Video display frame
-        self.video_frame = tk.Label(self)
-        self.video_frame.pack(pady=20)
+        # Left Frame for Live Feed and Controls
+        self.left_frame = tk.Frame(self, bg="black")
+        self.left_frame.grid(row=0, column=0, sticky="nsew")
 
-        # Control buttons
-        self.start_button = ttk.Button(self, text="Start Recognition", command=self.start_recognition)
-        self.start_button.pack(pady=10)
+        self.live_feed_label = tk.Label(self.left_frame, text="Live Feed", bg="black", fg="white", font=("Helvetica", 16))
+        self.live_feed_label.pack(expand=True, fill="both", pady=10)
 
-        self.stop_button = ttk.Button(self, text="Stop Recognition", command=self.stop_recognition, state="disabled")
-        self.stop_button.pack(pady=10)
+        self.start_button = ttk.Button(self.left_frame, text="Start Recognition", command=self.start_recognition)
+        self.start_button.pack(side="left", padx=10)
 
-        self.exit_button = ttk.Button(self, text="Exit", command=self.exit_program)
-        self.exit_button.pack(pady=10)
+        self.stop_button = ttk.Button(self.left_frame, text="Stop Recognition", command=self.stop_recognition)
+        self.stop_button.pack(side="left", padx=10)
 
-        # Label to display accuracy calculation and result
-        self.accuracy_label = tk.Label(self, text="", font=("Helvetica", 14), bg="#f7f7f7", fg="#2c3e50")
-        self.accuracy_label.pack(pady=20)
+        self.exit_button = ttk.Button(self.left_frame, text="Exit", command=self.exit_program)
+        self.exit_button.pack(side="left", padx=10)
+
+        # Right Frame for Recognition Details
+        self.right_frame = tk.Frame(self, bg="white")
+        self.right_frame.grid(row=0, column=1, sticky="nsew")
+
+        self.captured_image_label = tk.Label(self.right_frame, text="Captured Image", bg="gray", fg="white", font=("Helvetica", 16))
+        self.captured_image_label.pack(pady=10, fill="both", expand=True)
+
+        self.last_user_label = ttk.Label(self.right_frame, text="Last Recognized User: None", font=("Helvetica", 12))
+        self.last_user_label.pack(pady=5)
+
+        self.current_user_label = ttk.Label(self.right_frame, text="Current Recognized User: None", font=("Helvetica", 12))
+        self.current_user_label.pack(pady=5)
+
+        # Add an accuracy label to avoid missing attributes
+        self.accuracy_label = ttk.Label(self.right_frame, text="Accuracy: N/A", font=("Helvetica", 12))
+        self.accuracy_label.pack(pady=5)
+
+        # Use existing button logic
+        self.ok_button = ttk.Button(self.right_frame, text="OK", command=self.confirm_user)
+        self.ok_button.pack(side="left", padx=10)
+
+        self.not_you_button = ttk.Button(self.right_frame, text="Not You?", command=self.not_you_feedback)
+        self.not_you_button.pack(side="left", padx=10)
 
         # Initialize variables
         self.cap = None
         self.running = False
-        self.video_thread = None
-        self.total_scans = [0]
-        self.successful_scans = [0]
+        self.live_feed_thread = None
+        self.recognition_thread = None
+        self.camera_lock = threading.Lock()
+        self.frame_queue = queue.Queue(maxsize=10)
+
+        # Initialize CoreFunctions (fix missing attribute 'core')
+        self.core = CoreFunctions()
 
     def start_recognition(self):
-        # Reset counters at the start
-        self.total_scans[0] = 0
-        self.successful_scans[0] = 0
-        self.accuracy_label.config(text="")
-
         if not self.running:
-            self.cap = cv2.VideoCapture(0)
-            if not self.cap.isOpened():
-                print("Error: Unable to access the camera.")
-                return
             self.running = True
             self.start_button.config(state="disabled")
             self.stop_button.config(state="normal")
-            self.video_thread = threading.Thread(target=self.video_loop)
-            self.video_thread.start()
+
+            # Start live feed thread
+            self.live_feed_thread = threading.Thread(target=self.run_live_feed, daemon=True)
+            self.live_feed_thread.start()
+
+            # Start recognition thread
+            self.recognition_thread = threading.Thread(target=self.run_recognition, daemon=True)
+            self.recognition_thread.start()
 
     def stop_recognition(self):
         self.running = False
         self.start_button.config(state="normal")
         self.stop_button.config(state="disabled")
 
-        if self.total_scans[0] > 0:
-            accuracy = (self.successful_scans[0] / self.total_scans[0]) * 100
-            calculation_text = f"Accuracy: {self.successful_scans[0]} / {self.total_scans[0]} = {accuracy:.2f}%"
-        else:
-            accuracy = 0.0
-            calculation_text = "No scans performed."
+        with self.camera_lock:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
 
-        self.accuracy_label.config(text=calculation_text)
+        # Update accuracy label with a placeholder when recognition stops
+        self.accuracy_label.config(text="Accuracy: Recognition Stopped")
 
     def exit_program(self):
         self.stop_recognition()
-        if self.cap is not None:
-            self.cap.release()
         self.quit()
 
-    def video_loop(self):
+    def run_live_feed(self):
+        """Continuously capture frames from the camera."""
+        with self.camera_lock:
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                print("Error: Unable to access the camera.")
+                return
+
         while self.running:
-            ret, frame = self.cap.read()
-            if not ret:
-                break
+            with self.camera_lock:
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
 
-            faces = self.core.detect_faces(frame)
-            for (x, y, w, h) in faces:
-                face_image = self.core.capture_face(frame, (x, y, w, h))
-                image_path = self.core.save_face_image(face_image)
-                self.core.recognize_face(image_path, self.total_scans, self.successful_scans, self)
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                # Push frame into the queue for recognition
+                if not self.frame_queue.full():
+                    self.frame_queue.put(frame)
 
-            img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(img)
-            imgtk = ImageTk.PhotoImage(image=img)
-            self.video_frame.imgtk = imgtk
-            self.video_frame.config(image=imgtk)
+        with self.camera_lock:
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
 
-        if self.cap is not None:
-            self.cap.release()
-            self.video_frame.config(image="")
+    def run_recognition(self):
+        """Continuously process frames for face recognition."""
+        successful_scans = 0
+        total_scans = 0
+
+        while self.running:
+            try:
+                # Retrieve frame from the queue
+                frame = self.frame_queue.get(timeout=1)
+
+                # Perform recognition logic
+                face_descriptors, faces = FaceRecognition.get_face_descriptor(
+                    frame, self.core.detector, self.core.shape_predictor, self.core.face_rec_model
+                )
+
+                if face_descriptors:
+                    total_scans += 1
+                    for descriptor in face_descriptors:
+                        person_id = FaceRecognition.find_matching_person(descriptor)
+                        if person_id:
+                            successful_scans += 1
+                            self.last_user_label.config(text=f"Last Recognized User: {FaceRecognition._last_recognized_user}")
+                            self.current_user_label.config(text=f"Current Recognized User: {person_id}")
+                            FaceRecognition._last_recognized_user = person_id
+
+                # Update accuracy label
+                if total_scans > 0:
+                    accuracy = (successful_scans / total_scans) * 100
+                    self.accuracy_label.config(text=f"Accuracy: {accuracy:.2f}%")
+
+            except queue.Empty:
+                continue
+
+    def confirm_user(self):
+        """Use existing OK button logic."""
+        FaceRecognition.log_activity(FaceRecognition._last_recognized_user, 100)  # Confidence as an example
+
+    def not_you_feedback(self):
+        """Use existing Not You? button logic."""
+        feedback_window = FeedbackWindow()
+        feedback_window.show()
+
+
+
+
 
 if __name__ == "__main__":
     app = GUI()
