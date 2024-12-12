@@ -1,4 +1,5 @@
 import queue
+import time
 import tkinter as tk
 from tkinter import ttk
 import cv2
@@ -12,7 +13,6 @@ from PIL import Image, ImageTk
 import threading
 import json
 from scipy.spatial import distance
-import subprocess
 import time
 from utils import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT, SAVE_PATH, SHAPE_PREDICTOR_PATH, FACE_REC_MODEL_PATH
 import logging
@@ -979,6 +979,9 @@ class GUI(tk.Tk):
         self.title("Face Recognition")
         self.geometry("1280x720")
 
+        # Initialize attributes
+        self.last_scan_time = 0  # Initialize the last scan time
+
         # Use grid layout for main window
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
@@ -1001,7 +1004,7 @@ class GUI(tk.Tk):
         self.exit_button.pack(side="left", padx=10)
 
         # Right Frame for Recognition Details
-        self.right_frame = tk.Frame(self, bg="white")
+        self.right_frame = tk.Frame(self, bg="white")   
         self.right_frame.grid(row=0, column=1, sticky="nsew")
 
         self.captured_image_label = tk.Label(self.right_frame, text="Captured Image", bg="gray", fg="white", font=("Helvetica", 16))
@@ -1013,16 +1016,26 @@ class GUI(tk.Tk):
         self.current_user_label = ttk.Label(self.right_frame, text="Current Recognized User: None", font=("Helvetica", 12))
         self.current_user_label.pack(pady=5)
 
+        # Add a timestamp label for the last scan
+        self.last_scan_timestamp_label = ttk.Label(self.right_frame, text="Last Scan: N/A", font=("Helvetica", 12))
+        self.last_scan_timestamp_label.pack(pady=5)
+
         # Add an accuracy label to avoid missing attributes
         self.accuracy_label = ttk.Label(self.right_frame, text="Accuracy: N/A", font=("Helvetica", 12))
         self.accuracy_label.pack(pady=5)
 
-        # Use existing button logic
-        self.ok_button = ttk.Button(self.right_frame, text="OK", command=self.confirm_user)
+        # Frame for "Not You?" and "OK" buttons
+        self.button_frame = tk.Frame(self.right_frame, bg="white")
+        self.button_frame.pack(pady=10)
+        
+        # Add "OK" button to the right 
+        self.ok_button = ttk.Button(self.button_frame, text="OK", command=self.confirm_identity)
         self.ok_button.pack(side="left", padx=10)
 
-        self.not_you_button = ttk.Button(self.right_frame, text="Not You?", command=self.not_you_feedback)
+        # Add "Not You?" button
+        self.not_you_button = ttk.Button(self.button_frame, text="Not You?", command=self.not_you_feedback)
         self.not_you_button.pack(side="left", padx=10)
+
 
         # Initialize variables
         self.cap = None
@@ -1031,6 +1044,7 @@ class GUI(tk.Tk):
         self.recognition_thread = None
         self.camera_lock = threading.Lock()
         self.frame_queue = queue.Queue(maxsize=10)
+        self.last_scan_time
 
         # Initialize CoreFunctions (fix missing attribute 'core')
         self.core = CoreFunctions()
@@ -1040,6 +1054,9 @@ class GUI(tk.Tk):
             self.running = True
             self.start_button.config(state="disabled")
             self.stop_button.config(state="normal")
+
+            # Initialize confirmation flag
+            self.waiting_for_confirmation = False
 
             # Start live feed thread
             self.live_feed_thread = threading.Thread(target=self.run_live_feed, daemon=True)
@@ -1061,13 +1078,18 @@ class GUI(tk.Tk):
 
         # Update accuracy label with a placeholder when recognition stops
         self.accuracy_label.config(text="Accuracy: Recognition Stopped")
+        FaceRecognition._last_recognized_user = None
+        
+    def confirm_identity(self):
+        """Confirm the identity when the 'OK' button is clicked."""
+        self.waiting_for_confirmation = False
 
     def exit_program(self):
         self.stop_recognition()
         self.quit()
 
     def run_live_feed(self):
-        """Continuously capture frames from the camera."""
+        """Continuously capture frames from the camera and update the live feed."""
         with self.camera_lock:
             self.cap = cv2.VideoCapture(0)
             if not self.cap.isOpened():
@@ -1080,14 +1102,43 @@ class GUI(tk.Tk):
                 if not ret:
                     break
 
-                # Push frame into the queue for recognition
-                if not self.frame_queue.full():
-                    self.frame_queue.put(frame)
+            # Convert frame to RGB for display
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb_frame)
+            imgtk = ImageTk.PhotoImage(image=img)
+
+            # Update live feed asynchronously
+            self.after(0, self.update_live_feed_label, imgtk)
+
+            # Push frame to the queue without waiting
+            try:
+                self.frame_queue.put_nowait(frame)
+            except queue.Full:
+                pass  # If the queue is full, drop the frame to avoid lag
 
         with self.camera_lock:
             if self.cap is not None:
                 self.cap.release()
                 self.cap = None
+
+    def update_live_feed_label(self, imgtk):
+        """Update the live feed label without blocking the main thread."""
+        self.live_feed_label.imgtk = imgtk  # Store reference to avoid garbage collection
+        self.live_feed_label.config(image=imgtk)
+
+    def update_captured_image(self,frame):
+        """Update the captured image label."""
+        temp_image_path = os.path.join(SAVE_PATH, "temp.jpg")
+        try:
+            img = Image.open(temp_image_path)
+            img = img.resize((300, 300))  # Resize for display
+            imgtk = ImageTk.PhotoImage(image=img)
+
+            # Update the captured image label
+            self.captured_image_label.imgtk = imgtk  # Store a reference to avoid garbage collection
+            self.captured_image_label.config(image=imgtk)
+        except Exception as e:
+            print(f"Error loading captured image: {e}")
 
     def run_recognition(self):
         """Continuously process frames for face recognition."""
@@ -1096,8 +1147,13 @@ class GUI(tk.Tk):
 
         while self.running:
             try:
-                # Retrieve frame from the queue
+                # Retrieve a frame from the queue
                 frame = self.frame_queue.get(timeout=1)
+
+                # Check if 10 seconds have passed since the last scan
+                current_time = time.time()
+                if current_time - self.last_scan_time < 10:
+                    continue  # Skip recognition if 10 seconds haven't passed
 
                 # Perform recognition logic
                 face_descriptors, faces = FaceRecognition.get_face_descriptor(
@@ -1106,25 +1162,56 @@ class GUI(tk.Tk):
 
                 if face_descriptors:
                     total_scans += 1
-                    for descriptor in face_descriptors:
-                        person_id = FaceRecognition.find_matching_person(descriptor)
-                        if person_id:
-                            successful_scans += 1
-                            self.last_user_label.config(text=f"Last Recognized User: {FaceRecognition._last_recognized_user}")
-                            self.current_user_label.config(text=f"Current Recognized User: {person_id}")
-                            FaceRecognition._last_recognized_user = person_id
 
-                # Update accuracy label
-                if total_scans > 0:
-                    accuracy = (successful_scans / total_scans) * 100
-                    self.accuracy_label.config(text=f"Accuracy: {accuracy:.2f}%")
+                    # Save the first detected face and update captured image
+                    face = faces[0]
+                    (x, y, w, h) = face.left(), face.top(), face.width(), face.height()
+                    face_image = frame[y:y + h, x:x + w]
+                    self.core.save_face_image(face_image)
+                    self.update_captured_image(face_image)
+
+                    # Perform recognition
+                    for descriptor in face_descriptors:
+                        current_user = FaceRecognition.find_matching_person(descriptor)
+
+                        # If the current user differs from the last user, wait for confirmation
+                        if current_user and current_user != FaceRecognition._last_recognized_user:
+                            self.waiting_for_confirmation = True
+                            self.current_user_label.config(
+                                text=f"Current Recognized User: {current_user} (Confirm with OK)"
+                            )
+                            FaceRecognition._last_recognized_user = current_user
+
+                            # Wait for "OK" button press before proceeding
+                            while self.waiting_for_confirmation and self.running:
+                                time.sleep(0.1)
+
+                        # If confirmed, update the timestamp and labels
+                        if current_user:
+                            successful_scans += 1
+                            self.last_user_label.config(
+                                text=f"Last Recognized User: {FaceRecognition._last_recognized_user}"
+                            )
+                            self.current_user_label.config(
+                                text=f"Current Recognized User: {current_user}"
+                            )
+
+                            # Update last scan time and timestamp
+                            self.last_scan_time = current_time
+                            formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(current_time))
+                            self.last_scan_timestamp_label.config(text=f"Last Scan: {formatted_time}")
+
+                    # Update accuracy
+                    if total_scans > 0:
+                        accuracy = (successful_scans / total_scans) * 100
+                        self.accuracy_label.config(text=f"Accuracy: {successful_scans:.2f} / {total_scans:.2f} = {accuracy:.2f}%")
 
             except queue.Empty:
-                continue
+                continue  # No frames available, keep waiting
+            except Exception as e:
+                print(f"Error in recognition thread: {e}")
 
-    def confirm_user(self):
-        """Use existing OK button logic."""
-        FaceRecognition.log_activity(FaceRecognition._last_recognized_user, 100)  # Confidence as an example
+
 
     def not_you_feedback(self):
         """Use existing Not You? button logic."""
