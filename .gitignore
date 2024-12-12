@@ -1,4 +1,4 @@
-data/temp/temp.jpg
+data/temp
 <<<<<<< HEAD
 
 # Build and distribution files
@@ -8,3 +8,8 @@ build/
 *.pkg
 =======
 >>>>>>> 14a336c926137c39ba81b31825593bc3e70fe3b3
+models/models/temp/temp.jpg
+src/data/temp/temp.jpg
+src/data/temp/temp.jpg
+src/data/temp/temp.jpg
+src/data/temp/temp.jpg

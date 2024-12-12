@@ -1,3 +1,5 @@
+import csv
+import datetime
 import queue
 import time
 import tkinter as tk
@@ -523,11 +525,6 @@ class FaceRecognition:
         return face_descriptors, faces
 
     @staticmethod
-    def destroy_embeddings_dict():
-        """Clear the embeddings dictionary when the application is closed."""
-        FaceRecognition._embeddings_dict = {}
-
-    @staticmethod
     def compute_distance(embedding1, embedding2):
         embedding1 = np.array(embedding1, dtype=np.float64).flatten()
         embedding2 = np.array(embedding2, dtype=np.float64).flatten()
@@ -691,45 +688,6 @@ class FaceRecognition:
             FaceRecognition._embeddings_dict[person_id] = []
         FaceRecognition._embeddings_dict[person_id].append(embedding_array)
 
-    @staticmethod
-    def show_match_popup(person_id, parent):
-        popup = tk.Toplevel(parent)
-        popup.title("Match Found")
-        popup.geometry("300x150")
-        
-        # Center the popup
-        popup.update_idletasks()
-        width = popup.winfo_width()
-        height = popup.winfo_height()
-        x = (popup.winfo_screenwidth() // 2) - (width // 2)
-        y = (popup.winfo_screenheight() // 2) - (height // 2)
-        popup.geometry(f"{width}x{height}+{x}+{y}")
-        
-        # Add message
-        message = ttk.Label(popup, text=f"Match found: {person_id}", font=("Helvetica", 12))
-        message.pack(pady=20)
-        
-        # Create frame for buttons
-        button_frame = ttk.Frame(popup)
-        button_frame.pack(pady=10)
-        
-        # Add OK button
-        ok_button = ttk.Button(button_frame, text="OK", command=popup.destroy)
-        ok_button.pack(side=tk.LEFT, padx=10)
-        
-        # Add "Not you?" button
-        def open_feedback():
-            popup.destroy()  # Close the popup
-            feedback_window = FeedbackWindow()
-            feedback_window.show()
-        
-        not_you_button = ttk.Button(button_frame, text="Not you?", command=open_feedback)
-        not_you_button.pack(side=tk.LEFT, padx=10)
-        
-        # Make popup modal
-        popup.transient(parent)
-        popup.grab_set()
-        popup.wait_window()
 
 class CoreFunctions:
     def __init__(self):
@@ -781,12 +739,12 @@ class CoreFunctions:
             print("No faces detected in the image.")
             return False
 
-        total_scans[0] += 1
+        total_scans += 1
         new_embedding = face_descriptors[0]
         person_id = FaceRecognition.find_matching_person(new_embedding)
         
         if person_id:
-            successful_scans[0] += 1
+            successful_scans += 1
             self.show_captured_image(image_path, parent)
             
             if person_id != FaceRecognition._last_recognized_user:
@@ -981,6 +939,9 @@ class GUI(tk.Tk):
 
         # Initialize attributes
         self.last_scan_time = 0  # Initialize the last scan time
+        self.total_scans = 0
+        self.successful_scans = 0
+        self.current_user= None
 
         # Use grid layout for main window
         self.grid_rowconfigure(0, weight=1)
@@ -1000,8 +961,8 @@ class GUI(tk.Tk):
         self.stop_button = ttk.Button(self.left_frame, text="Stop Recognition", command=self.stop_recognition)
         self.stop_button.pack(side="left", padx=10)
 
-        self.exit_button = ttk.Button(self.left_frame, text="Exit", command=self.exit_program)
-        self.exit_button.pack(side="left", padx=10)
+        # self.exit_button = ttk.Button(self.left_frame, text="Exit", command=self.exit_program)
+        # self.exit_button.pack(side="left", padx=10)
 
         # Right Frame for Recognition Details
         self.right_frame = tk.Frame(self, bg="white")   
@@ -1058,6 +1019,8 @@ class GUI(tk.Tk):
             # Initialize confirmation flag
             self.waiting_for_confirmation = False
 
+            FaceRecognition.initialize_embeddings_dict()
+
             # Start live feed thread
             self.live_feed_thread = threading.Thread(target=self.run_live_feed, daemon=True)
             self.live_feed_thread.start()
@@ -1075,18 +1038,23 @@ class GUI(tk.Tk):
             if self.cap is not None:
                 self.cap.release()
                 self.cap = None
-
-        # Update accuracy label with a placeholder when recognition stops
-        self.accuracy_label.config(text="Accuracy: Recognition Stopped")
+           
         FaceRecognition._last_recognized_user = None
+
+        # Log session to CSV
+        SessionLogger.log_session(
+            SAVE_PATH,
+            self.total_scans,
+            self.successful_scans,
+            self.current_user,
+            confidence= 100 # You might want to pass actual confidence if tracked
+        )
+
+
         
     def confirm_identity(self):
         """Confirm the identity when the 'OK' button is clicked."""
         self.waiting_for_confirmation = False
-
-    def exit_program(self):
-        self.stop_recognition()
-        self.quit()
 
     def run_live_feed(self):
         """Continuously capture frames from the camera and update the live feed."""
@@ -1142,8 +1110,7 @@ class GUI(tk.Tk):
 
     def run_recognition(self):
         """Continuously process frames for face recognition."""
-        successful_scans = 0
-        total_scans = 0
+       
 
         while self.running:
             try:
@@ -1161,7 +1128,7 @@ class GUI(tk.Tk):
                 )
 
                 if face_descriptors:
-                    total_scans += 1
+                    self.total_scans += 1
 
                     # Save the first detected face and update captured image
                     face = faces[0]
@@ -1172,28 +1139,28 @@ class GUI(tk.Tk):
 
                     # Perform recognition
                     for descriptor in face_descriptors:
-                        current_user = FaceRecognition.find_matching_person(descriptor)
+                        self.current_user = FaceRecognition.find_matching_person(descriptor)
 
                         # If the current user differs from the last user, wait for confirmation
-                        if current_user and current_user != FaceRecognition._last_recognized_user:
+                        if self.current_user and self.current_user != FaceRecognition._last_recognized_user:
                             self.waiting_for_confirmation = True
                             self.current_user_label.config(
-                                text=f"Current Recognized User: {current_user} (Confirm with OK)"
+                                text=f"Current Recognized User: {self.current_user} (Confirm with OK)"
                             )
-                            FaceRecognition._last_recognized_user = current_user
+                            FaceRecognition._last_recognized_user = self.current_user
 
                             # Wait for "OK" button press before proceeding
                             while self.waiting_for_confirmation and self.running:
                                 time.sleep(0.1)
 
                         # If confirmed, update the timestamp and labels
-                        if current_user:
-                            successful_scans += 1
+                        if self.current_user:
+                            self.successful_scans += 1
                             self.last_user_label.config(
                                 text=f"Last Recognized User: {FaceRecognition._last_recognized_user}"
                             )
                             self.current_user_label.config(
-                                text=f"Current Recognized User: {current_user}"
+                                text=f"Current Recognized User: {self.current_user}"
                             )
 
                             # Update last scan time and timestamp
@@ -1202,9 +1169,9 @@ class GUI(tk.Tk):
                             self.last_scan_timestamp_label.config(text=f"Last Scan: {formatted_time}")
 
                     # Update accuracy
-                    if total_scans > 0:
-                        accuracy = (successful_scans / total_scans) * 100
-                        self.accuracy_label.config(text=f"Accuracy: {successful_scans:.2f} / {total_scans:.2f} = {accuracy:.2f}%")
+                    if self.total_scans > 0:
+                        accuracy = (self.successful_scans / self.total_scans) * 100
+                        self.accuracy_label.config(text=f"Accuracy: {self.successful_scans:.2f} / {self.total_scans:.2f} = {accuracy:.2f}%")
 
             except queue.Empty:
                 continue  # No frames available, keep waiting
@@ -1219,7 +1186,46 @@ class GUI(tk.Tk):
         feedback_window.show()
 
 
-
+class SessionLogger:
+    @staticmethod
+    def log_session(temp_folder, total_scans, successful_scans, recognized_user, confidence):
+        """
+        Log session information to a CSV file in the temp folder
+        
+        Args:
+            temp_folder (str): Path to temporary folder
+            total_scans (int): Total number of face scans
+            successful_scans (int): Number of successful recognitions
+            recognized_user (str): Identified user
+            confidence (float): Confidence level of recognition
+        """
+        # Create temp folder if it doesn't exist
+        os.makedirs(temp_folder, exist_ok=True)
+        
+        # Calculate accuracy
+        accuracy = (successful_scans / total_scans * 100) if total_scans > 0 else 0
+        
+        # Generate unique filename with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # Use underscores or omit colons
+        file_path = os.path.join(SAVE_PATH, f"session_stats_{timestamp}.csv")
+        
+        # CSV headers
+        headers = ['Timestamp', 'Total Scans', 'Successful Scans', 'Accuracy', 'Recognized User', 'Confidence']
+        
+        # Write to CSV
+        with open(file_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(headers)
+            writer.writerow([
+                timestamp, 
+                total_scans, 
+                successful_scans, 
+                f"{accuracy:.2f}%", 
+                recognized_user or "No Match", 
+                f"{confidence:.2f}" if confidence is not None else "N/A"
+            ])
+        
+        return file_path
 
 
 if __name__ == "__main__":
