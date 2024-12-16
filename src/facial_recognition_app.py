@@ -544,12 +544,9 @@ class FaceRecognition:
     @staticmethod
     def find_matching_person(new_embedding):
         """Find a matching person_id using the dictionary instead of database calls."""
-        new_embedding = np.array(new_embedding, dtype=np.float64).flatten()
-
-        for person_id, embeddings in FaceRecognition._embeddings_dict.items():
-            for stored_embedding in embeddings:
-                if FaceRecognition.is_match(new_embedding, stored_embedding):
-                    return person_id
+        for person_id, embedding in FaceRecognition._embeddings_dict.items():
+            if FaceRecognition.is_match(new_embedding, embedding):
+                return person_id
         return None
 
     @staticmethod
@@ -653,17 +650,9 @@ class FaceRecognition:
 
     @staticmethod
     def find_matching_person(new_embedding):
-        with FaceRecognition.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT person_id FROM face_embeddings")
-            person_ids = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-        
-        new_embedding = np.array(new_embedding, dtype=np.float64).flatten()
-
-        for person_id in person_ids:
-            embeddings = FaceRecognition.fetch_embeddings_from_db(person_id)
-            for angle, stored_embedding in embeddings:
+        """Find a matching person_id using the dictionary"""
+        for person_id, embeddings in FaceRecognition._embeddings_dict.items():
+            for stored_embedding in embeddings:
                 if FaceRecognition.is_match(new_embedding, stored_embedding):
                     return person_id
         return None
@@ -720,108 +709,6 @@ class CoreFunctions:
         (x, y, w, h) = face_coords
         face_image = frame[y:y + h, x:x + w]
         return face_image
-
-    def recognize_face(self, image_path, total_scans, successful_scans, parent):
-        image = cv2.imread(image_path)
-        
-        if image is None:
-            print(f"Error loading image: {image_path}")
-            return False
-        
-        # Show the captured image before recognition
-
-
-        face_descriptors, _ = FaceRecognition.get_face_descriptor(
-            image, self.detector, self.shape_predictor, self.face_rec_model
-        )
-        
-        if not face_descriptors:
-            print("No faces detected in the image.")
-            return False
-
-        total_scans += 1
-        new_embedding = face_descriptors[0]
-        person_id = FaceRecognition.find_matching_person(new_embedding)
-        
-        if person_id:
-            successful_scans += 1
-            self.show_captured_image(image_path, parent)
-            
-            if person_id != FaceRecognition._last_recognized_user:
-                # Show the popup
-                FaceRecognition._last_recognized_user = person_id
-
-                popup = tk.Toplevel(parent)
-                popup.title("Match Found")
-                popup.geometry("300x150")
-
-                # Center the popup
-                popup.update_idletasks()
-                width = popup.winfo_width()
-                height = popup.winfo_height()
-                x = (popup.winfo_screenwidth() // 2) - (width // 2)
-                y = (popup.winfo_screenheight() // 2) - (height // 2)
-                popup.geometry(f"{width}x{height}+{x}+{y}")
-
-                # Add message
-                message = ttk.Label(popup, text=f"Match found: {person_id}", font=("Helvetica", 12))
-                message.pack(pady=20)
-
-                # Add an OK button
-                ok_button = ttk.Button(popup, text="OK", command=popup.destroy)
-                ok_button.pack()
-                
-                # Create frame for buttons
-                button_frame = ttk.Frame(popup)
-                button_frame.pack(pady=10)
-
-                # Add "Not you?" button
-                def open_feedback():
-                    popup.destroy()  # Close the popup
-                    feedback_window = FeedbackWindow()
-                    feedback_window.show()
-
-                not_you_button = ttk.Button(button_frame, text="Not you?", command=open_feedback)
-                not_you_button.pack(side=tk.LEFT, padx=10)
-
-                # Make the popup modal
-                popup.transient(parent)
-                popup.grab_set()
-                popup.wait_window()
-
-                # Delay for 10 seconds
-                print(f"Waiting 5 seconds after recognizing {person_id}...")
-                time.sleep(5)  # Add the delay here
-            else:
-                print(f"User {person_id} already recognized recently.")
-        return False
-    
-
-    def show_captured_image(self, image_path, parent):
-        """Displays the captured image in a popup window and closes it after a duration."""
-        captured_image_popup = tk.Toplevel(parent)
-        captured_image_popup.title("Captured Image")
-        
-        # Load the image
-        img = Image.open(image_path)
-        img = img.resize((300, 300))  # Resize for display
-        imgtk = ImageTk.PhotoImage(img)
-        
-        # Display the image
-        img_label = ttk.Label(captured_image_popup, image=imgtk)
-        img_label.image = imgtk  # Keep a reference to avoid garbage collection
-        img_label.pack()
-        
-        # Set the duration for how long the popup will be displayed (in milliseconds)
-        duration = 2500 # 5 seconds
-        
-        # Schedule the popup to close after the duration
-        captured_image_popup.after(duration, captured_image_popup.destroy)
-        
-        # Make the popup modal
-        captured_image_popup.transient(parent)
-        captured_image_popup.grab_set()
-        captured_image_popup.wait_window()
 
 
 
@@ -942,6 +829,7 @@ class GUI(tk.Tk):
         self.total_scans = 0
         self.successful_scans = 0
         self.current_user= None
+        self.recognized_users = []
 
         # Use grid layout for main window
         self.grid_rowconfigure(0, weight=1)
@@ -1041,14 +929,7 @@ class GUI(tk.Tk):
            
         FaceRecognition._last_recognized_user = None
 
-        # Log session to CSV
-        SessionLogger.log_session(
-            SAVE_PATH,
-            self.total_scans,
-            self.successful_scans,
-            self.current_user,
-            confidence= 100 # You might want to pass actual confidence if tracked
-        )
+        SessionLogger.log_session(SAVE_PATH, self.recognized_users)
 
 
         
@@ -1110,17 +991,15 @@ class GUI(tk.Tk):
 
     def run_recognition(self):
         """Continuously process frames for face recognition."""
-       
-
         while self.running:
             try:
                 # Retrieve a frame from the queue
                 frame = self.frame_queue.get(timeout=1)
 
-                # Check if 10 seconds have passed since the last scan
+                # Check if 5 seconds have passed since the last scan
                 current_time = time.time()
-                if current_time - self.last_scan_time < 10:
-                    continue  # Skip recognition if 10 seconds haven't passed
+                if current_time - self.last_scan_time < 5:
+                    continue  # Skip recognition if 5 seconds haven't passed
 
                 # Perform recognition logic
                 face_descriptors, faces = FaceRecognition.get_face_descriptor(
@@ -1128,7 +1007,6 @@ class GUI(tk.Tk):
                 )
 
                 if face_descriptors:
-                    self.total_scans += 1
 
                     # Save the first detected face and update captured image
                     face = faces[0]
@@ -1155,6 +1033,8 @@ class GUI(tk.Tk):
 
                         # If confirmed, update the timestamp and labels
                         if self.current_user:
+                            self.total_scans += 1
+                            self.recognized_users.append((self.current_user, 100, "Recognized"))
                             self.successful_scans += 1
                             self.last_user_label.config(
                                 text=f"Last Recognized User: {FaceRecognition._last_recognized_user}"
@@ -1188,42 +1068,26 @@ class GUI(tk.Tk):
 
 class SessionLogger:
     @staticmethod
-    def log_session(temp_folder, total_scans, successful_scans, recognized_user, confidence):
+    def log_session(temp_folder,recognized_users):
         """
         Log session information to a CSV file in the temp folder
-        
-        Args:
-            temp_folder (str): Path to temporary folder
-            total_scans (int): Total number of face scans
-            successful_scans (int): Number of successful recognitions
-            recognized_user (str): Identified user
-            confidence (float): Confidence level of recognition
         """
         # Create temp folder if it doesn't exist
         os.makedirs(temp_folder, exist_ok=True)
-        
-        # Calculate accuracy
-        accuracy = (successful_scans / total_scans * 100) if total_scans > 0 else 0
         
         # Generate unique filename with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # Use underscores or omit colons
         file_path = os.path.join(SAVE_PATH, f"session_stats_{timestamp}.csv")
         
         # CSV headers
-        headers = ['Timestamp', 'Total Scans', 'Successful Scans', 'Accuracy', 'Recognized User', 'Confidence']
+        headers = ['Timestamp', 'Recognized User', 'Confidence', "Verdict"]
         
         # Write to CSV
         with open(file_path, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(headers)
-            writer.writerow([
-                timestamp, 
-                total_scans, 
-                successful_scans, 
-                f"{accuracy:.2f}%", 
-                recognized_user or "No Match", 
-                f"{confidence:.2f}" if confidence is not None else "N/A"
-            ])
+            for user, confidence, verdict in recognized_users:
+                writer.writerow([timestamp, user, confidence, verdict])
         
         return file_path
 
