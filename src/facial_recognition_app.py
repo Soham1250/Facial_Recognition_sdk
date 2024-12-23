@@ -79,157 +79,10 @@ class DBConnectionManager:
                 "connect_timeout": 5,
                 "use_pure": True,
                 "autocommit": True,
-            }
-
-            max_retries = 3
-            retry_count = 0
-
-            while retry_count < max_retries:
-                try:
-                    self._release_socket()
-                    if retry_count > 0:
-                        self._wait_before_retry()
-
-                    self._pool = mysql.connector.pooling.MySQLConnectionPool(**pool_config)
-
-                    # Verify pool health
-                    test_conn = self._pool.get_connection()
-                    if self._check_connection_health(test_conn):
-                        test_conn.close()
-                        logging.info("MySQL connection pool initialized successfully")
-                        self._backoff_time = 1  # Reset backoff time on success
-                        break
-                    else:
-                        raise Exception("Connection health check failed")
-
-                except Error as err:
-                    retry_count += 1
-                    logging.warning(f"Attempt {retry_count} failed: {err}")
-                    if retry_count == max_retries:
-                        logging.error(f"Failed to initialize connection pool after {max_retries} attempts")
-                        raise
-
-    @contextmanager
-    def get_connection(self):
-        """Get a connection from the pool with automatic cleanup and health check"""
-        conn = None
-        try:
-            conn = self._pool.get_connection(wait_timeout=10)  # Wait up to 10 seconds
-            if not self._check_connection_health(conn):
-                logging.warning("Unhealthy connection detected, reinitializing pool")
-                self._initialize_pool()
-                conn = self._pool.get_connection()
-
-            conn.cmd_reset_connection()
-            yield conn
-
-        except Error as err:
-            logging.error(f"Database connection error: {err}")
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            raise
-        finally:
-            if conn:
-                try:
-                    if conn.is_connected():
-                        conn.close()
-                except Exception as e:
-                    logging.error(f"Error closing connection: {e}")
-
-    def _cleanup_idle_connections(self):
-        """Clean up idle connections in the pool"""
-        if self._pool:
-            for conn in list(self._pool._cnx_queue):
-                try:
-                    if conn.is_connected():
-                        conn.ping(reconnect=False, attempts=1, delay=0)
-                    else:
-                        conn.close()
-                except Exception as e:
-                    logging.warning(f"Error during idle connection cleanup: {e}")
-
-    def _start_cleanup_thread(self):
-        """Start a background thread to clean up idle connections"""
-        def cleanup_task():
-            while True:
-                self._cleanup_idle_connections()
-                time.sleep(300)  # Run every 5 minutes
-
-        threading.Thread(target=cleanup_task, daemon=True).start()
-
-    def cleanup(self):
-        """Cleanup all connections in the pool"""
-        if self._pool:
-            for conn in self._pool._cnx_queue:
-                try:
-                    if conn.is_connected():
-                        conn.close()
-                except Exception:
-                    pass
-            self._pool = None
-            self._release_socket()
-            logging.info("Connection pool cleaned up")
-
-    def __del__(self):
-        """Ensure cleanup on object destruction"""
-        self.cleanup()
-    _instance = None
-    _pool = None
-    _last_connection_attempt = 0
-    _backoff_time = 1  # Initial backoff time in seconds
-
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super(DBConnectionManager, cls).__new__(cls)
-            cls._instance._initialize_pool()
-            cls._instance._start_cleanup_thread()
-        return cls._instance
-
-    def _release_socket(self):
-        """Release any existing socket connections"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.close()
-        except Exception as e:
-            logging.warning(f"Error releasing socket: {e}")
-
-    def _wait_before_retry(self):
-        """Implement exponential backoff with jitter"""
-        sleep_time = self._backoff_time + random.uniform(0, 0.5)  # Add jitter
-        time.sleep(sleep_time)
-        self._backoff_time = min(self._backoff_time * 2, 60)  # Max backoff 60 seconds
-        self._last_connection_attempt = time.time()
-
-    def _check_connection_health(self, conn):
-        """Check if connection is healthy"""
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT 1")
-            cursor.fetchone()
-            cursor.close()
-            return True
-        except Exception:
-            return False
-
-    def _initialize_pool(self):
-        """Initialize the connection pool with retry mechanism and socket management"""
-        if self._pool is None:
-            pool_config = {
-                "pool_name": "face_recognition_pool",
-                "pool_size": 5,
-                "host": DB_HOST,
-                "database": DB_NAME,
-                "user": DB_USER,
-                "password": DB_PASS,
-                "port": DB_PORT,
-                "pool_reset_session": True,
-                "connect_timeout": 5,
-                "use_pure": True,
-                "autocommit": True,
+                "get_warnings": True,
+                "raise_on_warnings": True,
+                "connection_timeout": 10,
+                "pool_reset_session": True
             }
 
             max_retries = 3
@@ -331,7 +184,7 @@ class DBConnectionManager:
     _pool = None
     _last_connection_attempt = 0
     _backoff_time = 1  # Initial backoff time in seconds
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DBConnectionManager, cls).__new__(cls)
@@ -538,7 +391,7 @@ class FaceRecognition:
     @staticmethod
     def calculate_confidence(embedding1, embedding2, threshold=0.3):
         euclidean_distance = FaceRecognition.compute_distance(embedding1, embedding2)
-        confidence_level = 100 - euclidean_distance * 10
+        confidence_level = 100 - euclidean_distance * 10 
         return confidence_level
 
     @staticmethod
@@ -678,39 +531,95 @@ class FaceRecognition:
         FaceRecognition._embeddings_dict[person_id].append(embedding_array)
 
 
+class AntiSpoofing:
+    def __init__(self):
+        self.previous_frame = None
+        self.motion_threshold = 0.02  # Threshold for motion detection
+        self.lbp_threshold = 0.68000099   # Threshold for texture analysis
+
+    def compute_lbp(self, image):
+        """Compute Local Binary Pattern for texture analysis"""
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        patterns = np.zeros_like(gray)
+        
+        for i in range(1, gray.shape[0] - 1):
+            for j in range(1, gray.shape[1] - 1):
+                center = gray[i, j]
+                code = 0
+                code |= (gray[i-1, j-1] >= center) << 7
+                code |= (gray[i-1, j] >= center) << 6
+                code |= (gray[i-1, j+1] >= center) << 5
+                code |= (gray[i, j+1] >= center) << 4
+                code |= (gray[i+1, j+1] >= center) << 3
+                code |= (gray[i+1, j] >= center) << 2
+                code |= (gray[i+1, j-1] >= center) << 1
+                code |= (gray[i, j-1] >= center) << 0
+                patterns[i, j] = code
+        
+        return patterns
+
+    def check_texture(self, face_image):
+        """Analyze texture patterns to detect printed/digital images"""
+        lbp = self.compute_lbp(face_image)
+        hist = np.histogram(lbp.ravel(), bins=256, range=(0, 256))[0]
+        hist = hist.astype('float') / hist.sum()
+        
+        # Real faces typically have more varied texture patterns
+        entropy = -np.sum(hist * np.log2(hist + 1e-7))
+        normalized_entropy = entropy / 8  # Max entropy for 8-bit patterns
+        
+        return normalized_entropy > self.lbp_threshold
+
+    def detect_motion(self, current_frame):
+        """Detect natural motion between frames"""
+        if self.previous_frame is None:
+            self.previous_frame = current_frame
+            return True
+        
+        # Convert frames to grayscale
+        curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+        prev_gray = cv2.cvtColor(self.previous_frame, cv2.COLOR_BGR2GRAY)
+        
+        # Calculate frame difference
+        frame_diff = cv2.absdiff(curr_gray, prev_gray)
+        motion_score = np.mean(frame_diff) / 255.0
+        
+        # Update previous frame
+        self.previous_frame = current_frame
+        
+        return motion_score > self.motion_threshold
+
+    def is_real_face(self, face_image, full_frame):
+        """Combine multiple methods to determine if the face is real"""
+        texture_check = self.check_texture(face_image)
+        motion_check = self.detect_motion(full_frame)
+        
+        # Both checks must pass
+        return texture_check and motion_check
+
 class CoreFunctions:
     def __init__(self):
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.detector, self.shape_predictor, self.face_rec_model = self.load_models()
 
     def load_models(self):
+        """Load required models for face detection and recognition."""
         detector = dlib.get_frontal_face_detector()
         shape_predictor = dlib.shape_predictor(SHAPE_PREDICTOR_PATH)
         face_rec_model = dlib.face_recognition_model_v1(FACE_REC_MODEL_PATH)
         return detector, shape_predictor, face_rec_model
 
     def detect_faces(self, frame):
+        """Detect faces in a frame using OpenCV cascade classifier."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+        faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
         return faces
 
-    def save_face_image(self, face_image):
-        face_image_path = os.path.join(SAVE_PATH, "temp.jpg")
-        try:
-            if not os.path.exists(SAVE_PATH):
-                os.makedirs(SAVE_PATH)
-            cv2.imwrite(face_image_path, face_image)
-            return face_image_path
-        except Exception as e:
-            print(f"Error saving image: {e}")
-            return None
-
     def capture_face(self, frame, face_coords):
-        (x, y, w, h) = face_coords
-        face_image = frame[y:y + h, x:x + w]
-        return face_image
-
-
+        """Extract face region from frame."""
+        x, y, w, h = face_coords
+        face = frame[y:y+h, x:x+w]
+        return face
 
 class FeedbackWindow:
     def __init__(self):
@@ -830,6 +739,7 @@ class GUI(tk.Tk):
         self.successful_scans = 0
         self.current_user= None
         self.recognized_users = []
+        self.confidendence_level = 0
 
         # Use grid layout for main window
         self.grid_rowconfigure(0, weight=1)
@@ -849,9 +759,6 @@ class GUI(tk.Tk):
         self.stop_button = ttk.Button(self.left_frame, text="Stop Recognition", command=self.stop_recognition)
         self.stop_button.pack(side="left", padx=10)
 
-        # self.exit_button = ttk.Button(self.left_frame, text="Exit", command=self.exit_program)
-        # self.exit_button.pack(side="left", padx=10)
-
         # Right Frame for Recognition Details
         self.right_frame = tk.Frame(self, bg="white")   
         self.right_frame.grid(row=0, column=1, sticky="nsew")
@@ -868,6 +775,10 @@ class GUI(tk.Tk):
         # Add a timestamp label for the last scan
         self.last_scan_timestamp_label = ttk.Label(self.right_frame, text="Last Scan: N/A", font=("Helvetica", 12))
         self.last_scan_timestamp_label.pack(pady=5)
+
+        #Add a confidence level label
+        self.confidence_level_label = ttk.Label(self.right_frame, text="Confidence Level: N/A", font=("Helvetica", 12))
+        self.confidence_level_label.pack(pady=5)
 
         # Add an accuracy label to avoid missing attributes
         self.accuracy_label = ttk.Label(self.right_frame, text="Accuracy: N/A", font=("Helvetica", 12))
@@ -897,6 +808,9 @@ class GUI(tk.Tk):
 
         # Initialize CoreFunctions (fix missing attribute 'core')
         self.core = CoreFunctions()
+        
+        # Initialize AntiSpoofing
+        self.anti_spoofing = AntiSpoofing()
 
     def start_recognition(self):
         if not self.running:
@@ -906,6 +820,10 @@ class GUI(tk.Tk):
 
             # Initialize confirmation flag
             self.waiting_for_confirmation = False
+            
+            # Disable confirmation buttons at start
+            self.ok_button.config(state="disabled")
+            self.not_you_button.config(state="disabled")
 
             FaceRecognition.initialize_embeddings_dict()
 
@@ -935,7 +853,16 @@ class GUI(tk.Tk):
         
     def confirm_identity(self):
         """Confirm the identity when the 'OK' button is clicked."""
+        self.successful_scans +=1
+        self.total_scans += 1
         self.waiting_for_confirmation = False
+        
+        # Disable buttons after confirmation
+        self.ok_button.config(state="disabled")
+        self.not_you_button.config(state="disabled")
+        
+        # Reset the captured image label to default
+        self.captured_image_label.config(image='', text="Captured Image")
 
     def run_live_feed(self):
         """Continuously capture frames from the camera and update the live feed."""
@@ -975,19 +902,24 @@ class GUI(tk.Tk):
         self.live_feed_label.imgtk = imgtk  # Store reference to avoid garbage collection
         self.live_feed_label.config(image=imgtk)
 
-    def update_captured_image(self,frame):
-        """Update the captured image label."""
-        temp_image_path = os.path.join(SAVE_PATH, "temp.jpg")
+    def update_captured_image(self, face_image):
+        """Update the captured image label directly from face image array."""
         try:
-            img = Image.open(temp_image_path)
-            img = img.resize((300, 300))  # Resize for display
-            imgtk = ImageTk.PhotoImage(image=img)
+            # Convert BGR to RGB
+            rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
+            
+            # Convert to PIL Image
+            pil_image = Image.fromarray(rgb_face)
+            pil_image = pil_image.resize((300, 300))  # Resize for display
+            
+            # Convert to PhotoImage
+            imgtk = ImageTk.PhotoImage(image=pil_image)
 
             # Update the captured image label
             self.captured_image_label.imgtk = imgtk  # Store a reference to avoid garbage collection
             self.captured_image_label.config(image=imgtk)
         except Exception as e:
-            print(f"Error loading captured image: {e}")
+            print(f"Error updating captured image: {e}")
 
     def run_recognition(self):
         """Continuously process frames for face recognition."""
@@ -996,10 +928,10 @@ class GUI(tk.Tk):
                 # Retrieve a frame from the queue
                 frame = self.frame_queue.get(timeout=1)
 
-                # Check if 5 seconds have passed since the last scan
+                #10 seconds have passed since the last scan
                 current_time = time.time()
                 if current_time - self.last_scan_time < 5:
-                    continue  # Skip recognition if 5 seconds haven't passed
+                    continue  
 
                 # Perform recognition logic
                 face_descriptors, faces = FaceRecognition.get_face_descriptor(
@@ -1007,12 +939,46 @@ class GUI(tk.Tk):
                 )
 
                 if face_descriptors:
-
                     # Save the first detected face and update captured image
                     face = faces[0]
                     (x, y, w, h) = face.left(), face.top(), face.width(), face.height()
                     face_image = frame[y:y + h, x:x + w]
-                    self.core.save_face_image(face_image)
+                    
+                    # Perform anti-spoofing checks
+                    if not self.anti_spoofing.is_real_face(face_image, frame):
+                        # Find who the spoofing was attempted for
+                        spoofed_user = None
+                        spoofed_confidence = 0
+                        
+                        for descriptor in face_descriptors:
+                            potential_user = FaceRecognition.find_matching_person(descriptor)
+                            if potential_user:
+                                # Calculate confidence for logging
+                                confidence = FaceRecognition.calculate_confidence(
+                                    descriptor, 
+                                    FaceRecognition._embeddings_dict[potential_user][0]
+                                )
+                                spoofed_user = potential_user
+                                spoofed_confidence = int(confidence)
+                                break
+                        
+                        # Log the spoofing attempt with target user info
+                        attempt_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                        target_info = f"Spoofing Attempt for {spoofed_user}" if spoofed_user else "Spoofing Attempt (Unknown Target)"
+                        self.recognized_users.append((spoofed_user or "Unknown", spoofed_confidence, target_info, attempt_time))
+                        
+                        # Update UI with spoofing warning and target info
+                        warning_text = f"Warning: Spoofing Attempt Detected! Target: {spoofed_user or 'Unknown'}"
+                        self.current_user_label.config(text=warning_text)
+                        
+                        # Update accuracy label
+                        if self.total_scans > 0:
+                            accuracy = (self.successful_scans / self.total_scans) * 100
+                            self.accuracy_label.config(text=f"Accuracy: {self.successful_scans:.2f} / {self.total_scans:.2f} = {accuracy:.2f}%")
+                        else:
+                            self.accuracy_label.config(text="Accuracy: N/A")
+                        continue
+                    
                     self.update_captured_image(face_image)
 
                     # Perform recognition
@@ -1020,8 +986,13 @@ class GUI(tk.Tk):
                         self.current_user = FaceRecognition.find_matching_person(descriptor)
 
                         # If the current user differs from the last user, wait for confirmation
-                        if self.current_user and self.current_user != FaceRecognition._last_recognized_user:
+                        if self.current_user :
                             self.waiting_for_confirmation = True
+                            
+                            # Enable buttons for user interaction
+                            self.ok_button.config(state="normal")
+                            self.not_you_button.config(state="normal")
+                            
                             self.current_user_label.config(
                                 text=f"Current Recognized User: {self.current_user} (Confirm with OK)"
                             )
@@ -1033,14 +1004,28 @@ class GUI(tk.Tk):
 
                         # If confirmed, update the timestamp and labels
                         if self.current_user:
-                            self.total_scans += 1
-                            self.recognized_users.append((self.current_user, 100, "Recognized"))
-                            self.successful_scans += 1
+                            # Calculate confidence level
+                            confidence = FaceRecognition.calculate_confidence(descriptor, FaceRecognition._embeddings_dict[self.current_user][0])
+                            confidence_percent = int(confidence)
+                            self.confidence_level_label.config (text= f"Confidence Level: {confidence_percent}%") 
+                            
+                            # Determine verdict based on confidence
+                            if confidence_percent >= 90:
+                                verdict = "High Confidence"
+                            elif confidence_percent >= 75:
+                                verdict = "Medium Confidence"
+                            else:
+                                verdict = "Low Confidence"
+                            
+                            # Record recognition with timestamp
+                            recognition_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                            self.recognized_users.append((self.current_user, confidence_percent, verdict, recognition_time))
+                            
                             self.last_user_label.config(
                                 text=f"Last Recognized User: {FaceRecognition._last_recognized_user}"
                             )
                             self.current_user_label.config(
-                                text=f"Current Recognized User: {self.current_user}"
+                                text=f"Current Recognized User: {self.current_user} ({confidence_percent}% confidence)"
                             )
 
                             # Update last scan time and timestamp
@@ -1052,6 +1037,8 @@ class GUI(tk.Tk):
                     if self.total_scans > 0:
                         accuracy = (self.successful_scans / self.total_scans) * 100
                         self.accuracy_label.config(text=f"Accuracy: {self.successful_scans:.2f} / {self.total_scans:.2f} = {accuracy:.2f}%")
+                    else:
+                        self.accuracy_label.config(text="Accuracy: N/A")
 
             except queue.Empty:
                 continue  # No frames available, keep waiting
@@ -1061,33 +1048,48 @@ class GUI(tk.Tk):
 
 
     def not_you_feedback(self):
-        """Use existing Not You? button logic."""
+        """Handle when user indicates the recognition was incorrect."""
+        self.total_scans += 1
+        self.waiting_for_confirmation = False
+        
+        # Disable buttons after feedback
+        self.ok_button.config(state="disabled")
+        self.not_you_button.config(state="disabled")
+
+        # Reset the captured image label to default
+        self.captured_image_label.config(image='', text="Captured Image")
+        
+        # Show feedback window
         feedback_window = FeedbackWindow()
         feedback_window.show()
 
 
 class SessionLogger:
     @staticmethod
-    def log_session(temp_folder,recognized_users):
+    def log_session(temp_folder, recognized_users):
         """
         Log session information to a CSV file in the temp folder
+        Args:
+            temp_folder: Directory to save the log file
+            recognized_users: List of tuples containing (user_id, confidence, verdict, timestamp)
         """
         # Create temp folder if it doesn't exist
         os.makedirs(temp_folder, exist_ok=True)
         
         # Generate unique filename with timestamp
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # Use underscores or omit colons
-        file_path = os.path.join(SAVE_PATH, f"session_stats_{timestamp}.csv")
+        session_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = os.path.join(temp_folder, f"session_stats_{session_timestamp}.csv")
         
         # CSV headers
-        headers = ['Timestamp', 'Recognized User', 'Confidence', "Verdict"]
+        headers = ['Recognition Time', 'User/Attempt Type', 'Confidence (%)', 'Status']
+        
         
         # Write to CSV
         with open(file_path, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(headers)
-            for user, confidence, verdict in recognized_users:
-                writer.writerow([timestamp, user, confidence, verdict])
+            for user, confidence, verdict, recognition_time in recognized_users:
+                writer.writerow([recognition_time, user, confidence, verdict])
         
         return file_path
 
