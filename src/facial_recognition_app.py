@@ -22,7 +22,6 @@ from contextlib import contextmanager
 import time
 import socket
 import random
-import sys
 
 class DBConnectionManager:
     _instance = None
