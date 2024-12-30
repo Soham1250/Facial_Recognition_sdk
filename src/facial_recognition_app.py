@@ -569,6 +569,9 @@ class AntiSpoofing:
         
         return normalized_entropy > self.lbp_threshold
 
+    def get_challenge_message():
+        return "Please move your face to verify your liveliness"
+
     def detect_motion(self, current_frame):
         """Detect natural motion between frames"""
         if self.previous_frame is None:
@@ -860,8 +863,9 @@ class GUI(tk.Tk):
         self.ok_button.config(state="disabled")
         self.not_you_button.config(state="disabled")
         
-        # Reset the captured image label to default
+        # Reset the captured image label to default with black text
         self.captured_image_label.config(image='', text="Captured Image")
+        self.current_user_label.config(foreground="black")  # Ensure text stays black after confirmation
 
     def run_live_feed(self):
         """Continuously capture frames from the camera and update the live feed."""
@@ -968,7 +972,7 @@ class GUI(tk.Tk):
                         
                         # Update UI with spoofing warning and target info
                         warning_text = f"Warning: Spoofing Attempt Detected! Target: {spoofed_user or 'Unknown'}"
-                        self.current_user_label.config(text=warning_text)
+                        self.current_user_label.config(text=warning_text, foreground="red")
                         
                         # Update accuracy label
                         if self.total_scans > 0:
@@ -993,7 +997,8 @@ class GUI(tk.Tk):
                             self.not_you_button.config(state="normal")
                             
                             self.current_user_label.config(
-                                text=f"Current Recognized User: {self.current_user} (Confirm with OK)"
+                                text=f"Current Recognized User: {self.current_user} (Confirm with OK)",
+                                foreground="black"  # Reset color to black for normal recognition
                             )
                             FaceRecognition._last_recognized_user = self.current_user
 
